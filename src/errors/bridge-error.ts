@@ -20,3 +20,9 @@ export class AoRequestError extends BridgeError {}
 export class TaskNotCompletedError extends BridgeError {}
 
 export class TaskResultUnavailableError extends BridgeError {}
+
+export class TaskUnavailableError extends BridgeError {}
+
+export class InvalidRequestError extends BridgeError {}
+
+export class InvalidConfigurationError extends BridgeError {}

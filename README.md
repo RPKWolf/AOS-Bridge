@@ -27,6 +27,26 @@ npm run typecheck
 npm test
 ```
 
+## Local Gateway
+
+Start the loopback-only local server:
+
+```sh
+AO_BASE_URL=<base-url> AO_PROJECT_ID=<project-id> AO_HARNESS=<harness> AO_DISPLAY_NAME=<display-name> npm run bridge:server
+```
+
+The server always binds to `127.0.0.1`; `BRIDGE_HOST` MAY be set only to `127.0.0.1`, and `BRIDGE_PORT` defaults to `8787`.
+
+Available endpoints are `GET /health`, `POST /api/v1/tasks`, `GET /api/v1/tasks/{id}`, and `GET /api/v1/tasks/{id}/result`.
+
+Run a prompt through the local Gateway:
+
+```sh
+npm run bridge:cli -- run "PROMPT"
+```
+
+The CLI communicates only with the local Bridge HTTP API.
+
 ## Manual bridge end-to-end check
 
 After installing dependencies, run:
@@ -41,7 +61,7 @@ The command sends exactly `Reply only with: BRIDGE_OK` and prints the task handl
 
 - Only AO Chat-mode orchestration is implemented.
 - Task state is retained only in memory for the running process.
-- There is no HTTP API, persistence, retry policy, queue, timeout manager, logging system, or AI-provider adapter.
+- There is no persistence, retry policy, queue, timeout manager, logging system, streaming API, or AI-provider adapter.
 
 ## Roadmap
 
