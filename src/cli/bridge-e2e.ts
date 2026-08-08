@@ -11,7 +11,7 @@ declare const process: {
 const terminalStatuses = new Set(["completed", "failed", "interrupted"]);
 
 async function main(): Promise<void> {
-  const adapter = new AoRestAdapter({
+  const adapter = await AoRestAdapter.create({
     baseUrl: requiredEnvironment("AO_BASE_URL"),
     projectId: requiredEnvironment("AO_PROJECT_ID"),
     harness: requiredEnvironment("AO_HARNESS"),
