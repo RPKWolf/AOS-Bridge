@@ -1,4 +1,10 @@
 import type { OrchestratorAdapter } from "./orchestrator-adapter";
+import {
+  AoProtocolError,
+  AoRequestError,
+  TaskResultUnavailableError,
+  UnsupportedAgentOrchestratorVersionError,
+} from "../errors/bridge-error";
 import type {
   TaskHandle,
   TaskRequest,
@@ -27,7 +33,14 @@ interface ConversationMessage {
 }
 
 export class AoRestAdapter implements OrchestratorAdapter {
-  public constructor(private readonly options: AoRestAdapterOptions) {}
+  private constructor(private readonly options: AoRestAdapterOptions) {}
+
+  public static async create(options: AoRestAdapterOptions): Promise<AoRestAdapter> {
+    const adapter = new AoRestAdapter(options);
+    await adapter.verifyCompatibility();
+
+    return adapter;
+  }
 
   public async submitTask(request: TaskRequest): Promise<TaskHandle> {
     const sessionResponse = await this.fetchJson("/api/v1/sessions", {
@@ -55,10 +68,12 @@ export class AoRestAdapter implements OrchestratorAdapter {
     const turnId = this.isRecord(messageResponse) ? messageResponse.turnId : undefined;
     if (typeof turnId !== "string" || turnId.trim().length === 0) {
       if (duplicate) {
-        throw new Error("Duplicate AO message response did not include a usable turnId");
+        throw new AoProtocolError(
+          "Duplicate AO message response did not include a usable turnId",
+        );
       }
 
-      throw new Error("AO message response did not include a usable turnId");
+      throw new AoProtocolError("AO message response did not include a usable turnId");
     }
 
     return { sessionId, turnId };
@@ -77,7 +92,7 @@ export class AoRestAdapter implements OrchestratorAdapter {
       case "failed":
         return turn.state;
       default:
-        throw new Error(`Unsupported AO turn state: ${turn.state}`);
+        throw new AoProtocolError(`Unsupported AO turn state: ${turn.state}`);
     }
   }
 
@@ -86,7 +101,7 @@ export class AoRestAdapter implements OrchestratorAdapter {
     const turn = this.findTurn(conversation, handle);
 
     if (turn.state !== "completed") {
-      throw new Error(`AO turn ${handle.turnId} is not completed`);
+      throw new AoProtocolError(`AO turn ${handle.turnId} is not completed`);
     }
 
     const message = this.getMessages(conversation)
@@ -99,7 +114,9 @@ export class AoRestAdapter implements OrchestratorAdapter {
       .sort((left, right) => right.sequence - left.sequence)[0];
 
     if (!message) {
-      throw new Error(`No completed assistant message for AO turn ${handle.turnId}`);
+      throw new TaskResultUnavailableError(
+        `No completed assistant message for AO turn ${handle.turnId}`,
+      );
     }
 
     return {
@@ -139,7 +156,7 @@ export class AoRestAdapter implements OrchestratorAdapter {
         "conversation snapshot",
       );
       if (!hasMoreBefore) {
-        throw new Error(`AO turn ${handle.turnId} was not found`);
+        throw new AoProtocolError(`AO turn ${handle.turnId} was not found`);
       }
 
       const oldestSequence = this.getNumber(
@@ -148,7 +165,7 @@ export class AoRestAdapter implements OrchestratorAdapter {
         "conversation snapshot",
       );
       if (!Number.isFinite(oldestSequence) || oldestSequence === beforeSequence) {
-        throw new Error("Invalid AO conversation pagination");
+        throw new AoProtocolError("Invalid AO conversation pagination");
       }
 
       beforeSequence = oldestSequence;
@@ -156,21 +173,58 @@ export class AoRestAdapter implements OrchestratorAdapter {
   }
 
   private async fetchJson(path: string, init?: RequestInit): Promise<unknown> {
-    const response = await fetch(`${this.options.baseUrl}${path}`, {
-      ...init,
-      headers: { "content-type": "application/json", ...init?.headers },
-    });
+    let response: Response;
 
-    if (!response.ok) {
-      throw new Error(`AO request failed: ${response.status} ${response.statusText}`);
+    try {
+      response = await fetch(`${this.options.baseUrl}${path}`, {
+        ...init,
+        headers: { "content-type": "application/json", ...init?.headers },
+      });
+    } catch {
+      throw new AoRequestError("Failed to reach Agent Orchestrator.");
     }
 
-    return response.json();
+    if (!response.ok) {
+      throw new AoRequestError(
+        `Agent Orchestrator request failed: ${response.status} ${response.statusText}`,
+      );
+    }
+
+    try {
+      return await response.json();
+    } catch {
+      throw new AoProtocolError("Agent Orchestrator returned an invalid JSON response.");
+    }
+  }
+
+  private async verifyCompatibility(): Promise<void> {
+    const requiredPaths = [
+      "/api/v1/sessions/{sessionId}/conversation",
+      "/api/v1/sessions/{sessionId}/conversation/messages",
+    ];
+
+    for (const path of requiredPaths) {
+      let response: Response;
+
+      try {
+        response = await fetch(`${this.options.baseUrl}${path}`, { method: "OPTIONS" });
+      } catch {
+        throw new AoRequestError("Failed to verify Agent Orchestrator compatibility.");
+      }
+
+      if (response.status === 404) {
+        throw new UnsupportedAgentOrchestratorVersionError();
+      }
+
+      if (response.status >= 500) {
+        throw new AoRequestError("Agent Orchestrator compatibility check failed.");
+      }
+    }
   }
 
   private getSessionId(response: unknown): string {
     if (!this.isRecord(response) || !this.isRecord(response.session)) {
-      throw new Error("Invalid AO SpawnSessionResponse");
+      throw new AoProtocolError("Invalid AO SpawnSessionResponse");
     }
 
     return this.getString(response.session, "id", "SpawnSessionResponse.session");
@@ -181,7 +235,7 @@ export class AoRestAdapter implements OrchestratorAdapter {
     const turn = turns.find((candidate) => candidate.id === handle.turnId);
 
     if (!turn) {
-      throw new Error(`AO turn ${handle.turnId} was not found`);
+      throw new AoProtocolError(`AO turn ${handle.turnId} was not found`);
     }
 
     return turn;
@@ -210,12 +264,12 @@ export class AoRestAdapter implements OrchestratorAdapter {
 
   private getArray(value: unknown, key: string, context: string): Record<string, unknown>[] {
     if (!this.isRecord(value) || !Array.isArray(value[key])) {
-      throw new Error(`Invalid AO ${context}`);
+      throw new AoProtocolError(`Invalid AO ${context}`);
     }
 
     return value[key].map((entry) => {
       if (!this.isRecord(entry)) {
-        throw new Error(`Invalid AO ${context}`);
+        throw new AoProtocolError(`Invalid AO ${context}`);
       }
 
       return entry;
@@ -224,7 +278,7 @@ export class AoRestAdapter implements OrchestratorAdapter {
 
   private getString(value: unknown, key: string, context: string): string {
     if (!this.isRecord(value) || typeof value[key] !== "string") {
-      throw new Error(`Invalid AO ${context}.${key}`);
+      throw new AoProtocolError(`Invalid AO ${context}.${key}`);
     }
 
     return value[key];
@@ -232,7 +286,7 @@ export class AoRestAdapter implements OrchestratorAdapter {
 
   private getBoolean(value: unknown, key: string, context: string): boolean {
     if (!this.isRecord(value) || typeof value[key] !== "boolean") {
-      throw new Error(`Invalid AO ${context}.${key}`);
+      throw new AoProtocolError(`Invalid AO ${context}.${key}`);
     }
 
     return value[key];
@@ -240,7 +294,7 @@ export class AoRestAdapter implements OrchestratorAdapter {
 
   private getNumber(value: unknown, key: string, context: string): number {
     if (!this.isRecord(value) || typeof value[key] !== "number") {
-      throw new Error(`Invalid AO ${context}.${key}`);
+      throw new AoProtocolError(`Invalid AO ${context}.${key}`);
     }
 
     return value[key];

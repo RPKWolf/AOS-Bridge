@@ -5,6 +5,7 @@ import type {
   TaskResult,
   TaskStatus,
 } from "../types/task";
+import { TaskNotCompletedError } from "../errors/bridge-error";
 import { InMemoryTaskStore, type TaskStore } from "./task-store";
 
 /** Coordinates task operations through an orchestration adapter. */
@@ -38,7 +39,7 @@ export class BridgeCore {
     const status = await this.getTaskStatus(handle);
 
     if (status !== "completed") {
-      throw new Error(`Task ${handle.turnId} is not completed`);
+      throw new TaskNotCompletedError(`Task ${handle.turnId} is not completed`);
     }
 
     const storedTask = this.taskStore.get(handle);
