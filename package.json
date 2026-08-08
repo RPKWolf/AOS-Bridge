@@ -7,6 +7,7 @@
     "bridge:cli": "npm run build && node dist/cli/bridge-cli.js",
     "bridge:e2e": "npm run build && node dist/cli/bridge-e2e.js",
     "bridge:server": "npm run build && node dist/cli/bridge-server.js",
+    "chatgpt:local": "npm run build && node dist/cli/chatgpt-local.js",
     "test": "npm run build && node --test dist/tests/*.test.js",
     "typecheck": "tsc --noEmit"
   },
