@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "build": "tsc",
+    "bridge:e2e": "npm run build && node dist/cli/bridge-e2e.js",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
