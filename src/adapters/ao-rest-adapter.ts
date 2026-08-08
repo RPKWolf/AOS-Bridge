@@ -1,0 +1,252 @@
+import type { OrchestratorAdapter } from "./orchestrator-adapter";
+import type {
+  TaskHandle,
+  TaskRequest,
+  TaskResult,
+  TaskStatus,
+} from "../types/task";
+
+export interface AoRestAdapterOptions {
+  baseUrl: string;
+  projectId: string;
+  harness: string;
+  displayName: string;
+}
+
+interface ConversationTurn {
+  id: string;
+  state: string;
+}
+
+interface ConversationMessage {
+  turnId: string;
+  role: string;
+  streaming: boolean;
+  sequence: number;
+  text: string;
+}
+
+export class AoRestAdapter implements OrchestratorAdapter {
+  public constructor(private readonly options: AoRestAdapterOptions) {}
+
+  public async submitTask(request: TaskRequest): Promise<TaskHandle> {
+    const sessionResponse = await this.fetchJson("/api/v1/sessions", {
+      method: "POST",
+      body: JSON.stringify({
+        projectId: this.options.projectId,
+        kind: "worker",
+        mode: "chat",
+        harness: this.options.harness,
+        displayName: this.options.displayName,
+      }),
+    });
+    const sessionId = this.getSessionId(sessionResponse);
+    const messageResponse = await this.fetchJson(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/conversation/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          text: request.prompt,
+          clientMessageId: request.id,
+        }),
+      },
+    );
+    const duplicate = this.getBoolean(messageResponse, "duplicate", "message response");
+    const turnId = this.isRecord(messageResponse) ? messageResponse.turnId : undefined;
+    if (typeof turnId !== "string" || turnId.trim().length === 0) {
+      if (duplicate) {
+        throw new Error("Duplicate AO message response did not include a usable turnId");
+      }
+
+      throw new Error("AO message response did not include a usable turnId");
+    }
+
+    return { sessionId, turnId };
+  }
+
+  public async getTaskStatus(handle: TaskHandle): Promise<TaskStatus> {
+    const conversation = await this.findConversationPage(handle);
+    const turn = this.findTurn(conversation, handle);
+
+    switch (turn.state) {
+      case "queued":
+        return "pending";
+      case "running":
+      case "completed":
+      case "interrupted":
+      case "failed":
+        return turn.state;
+      default:
+        throw new Error(`Unsupported AO turn state: ${turn.state}`);
+    }
+  }
+
+  public async getTaskResult(handle: TaskHandle): Promise<TaskResult> {
+    const conversation = await this.findConversationPage(handle);
+    const turn = this.findTurn(conversation, handle);
+
+    if (turn.state !== "completed") {
+      throw new Error(`AO turn ${handle.turnId} is not completed`);
+    }
+
+    const message = this.getMessages(conversation)
+      .filter(
+        (candidate) =>
+          candidate.turnId === handle.turnId &&
+          candidate.role === "assistant" &&
+          candidate.streaming === false,
+      )
+      .sort((left, right) => right.sequence - left.sequence)[0];
+
+    if (!message) {
+      throw new Error(`No completed assistant message for AO turn ${handle.turnId}`);
+    }
+
+    return {
+      id: handle.turnId,
+      status: "completed",
+      output: message.text,
+    };
+  }
+
+  private async getConversation(
+    sessionId: string,
+    beforeSequence?: number,
+  ): Promise<unknown> {
+    const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}/conversation`;
+    const paginatedPath =
+      beforeSequence === undefined
+        ? path
+        : `${path}?beforeSequence=${encodeURIComponent(String(beforeSequence))}`;
+
+    return this.fetchJson(paginatedPath);
+  }
+
+  private async findConversationPage(handle: TaskHandle): Promise<unknown> {
+    let beforeSequence: number | undefined;
+
+    while (true) {
+      const conversation = await this.getConversation(handle.sessionId, beforeSequence);
+      const turns = this.getTurns(conversation);
+
+      if (turns.some((turn) => turn.id === handle.turnId)) {
+        return conversation;
+      }
+
+      const hasMoreBefore = this.getBoolean(
+        conversation,
+        "hasMoreBefore",
+        "conversation snapshot",
+      );
+      if (!hasMoreBefore) {
+        throw new Error(`AO turn ${handle.turnId} was not found`);
+      }
+
+      const oldestSequence = this.getNumber(
+        conversation,
+        "oldestSequence",
+        "conversation snapshot",
+      );
+      if (!Number.isFinite(oldestSequence) || oldestSequence === beforeSequence) {
+        throw new Error("Invalid AO conversation pagination");
+      }
+
+      beforeSequence = oldestSequence;
+    }
+  }
+
+  private async fetchJson(path: string, init?: RequestInit): Promise<unknown> {
+    const response = await fetch(`${this.options.baseUrl}${path}`, {
+      ...init,
+      headers: { "content-type": "application/json", ...init?.headers },
+    });
+
+    if (!response.ok) {
+      throw new Error(`AO request failed: ${response.status} ${response.statusText}`);
+    }
+
+    return response.json();
+  }
+
+  private getSessionId(response: unknown): string {
+    if (!this.isRecord(response) || !this.isRecord(response.session)) {
+      throw new Error("Invalid AO SpawnSessionResponse");
+    }
+
+    return this.getString(response.session, "id", "SpawnSessionResponse.session");
+  }
+
+  private findTurn(conversation: unknown, handle: TaskHandle): ConversationTurn {
+    const turns = this.getTurns(conversation);
+    const turn = turns.find((candidate) => candidate.id === handle.turnId);
+
+    if (!turn) {
+      throw new Error(`AO turn ${handle.turnId} was not found`);
+    }
+
+    return turn;
+  }
+
+  private getTurns(conversation: unknown): ConversationTurn[] {
+    return this.getArray(conversation, "turns", "conversation snapshot").map(
+      (turn) => ({
+        id: this.getString(turn, "id", "conversation turn"),
+        state: this.getString(turn, "state", "conversation turn"),
+      }),
+    );
+  }
+
+  private getMessages(conversation: unknown): ConversationMessage[] {
+    return this.getArray(conversation, "messages", "conversation snapshot").map(
+      (message) => ({
+        turnId: this.getString(message, "turnId", "conversation message"),
+        role: this.getString(message, "role", "conversation message"),
+        streaming: this.getBoolean(message, "streaming", "conversation message"),
+        sequence: this.getNumber(message, "sequence", "conversation message"),
+        text: this.getString(message, "text", "conversation message"),
+      }),
+    );
+  }
+
+  private getArray(value: unknown, key: string, context: string): Record<string, unknown>[] {
+    if (!this.isRecord(value) || !Array.isArray(value[key])) {
+      throw new Error(`Invalid AO ${context}`);
+    }
+
+    return value[key].map((entry) => {
+      if (!this.isRecord(entry)) {
+        throw new Error(`Invalid AO ${context}`);
+      }
+
+      return entry;
+    });
+  }
+
+  private getString(value: unknown, key: string, context: string): string {
+    if (!this.isRecord(value) || typeof value[key] !== "string") {
+      throw new Error(`Invalid AO ${context}.${key}`);
+    }
+
+    return value[key];
+  }
+
+  private getBoolean(value: unknown, key: string, context: string): boolean {
+    if (!this.isRecord(value) || typeof value[key] !== "boolean") {
+      throw new Error(`Invalid AO ${context}.${key}`);
+    }
+
+    return value[key];
+  }
+
+  private getNumber(value: unknown, key: string, context: string): number {
+    if (!this.isRecord(value) || typeof value[key] !== "number") {
+      throw new Error(`Invalid AO ${context}.${key}`);
+    }
+
+    return value[key];
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null;
+  }
+}
