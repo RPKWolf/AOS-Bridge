@@ -41,6 +41,11 @@ async function handleRequest(
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/control") {
+    writeHtml(response, 200, CONTROL_PAGE);
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/api/v1/tasks") {
     const input = parseSubmitTask(await readJson(request));
     const handle = await gateway.submitTask(input);
@@ -111,6 +116,11 @@ function writeJson(response: ServerResponse, status: number, body: unknown): voi
   response.end(JSON.stringify(body));
 }
 
+function writeHtml(response: ServerResponse, status: number, body: string): void {
+  response.writeHead(status, { "content-type": "text/html; charset=utf-8" });
+  response.end(body);
+}
+
 function writeError(response: ServerResponse, error: unknown): void {
   const details = errorDetails(error);
   writeJson(response, details.status, { error: { code: details.code, message: details.message } });
@@ -151,3 +161,110 @@ function errorDetails(error: unknown): { status: number; code: string; message: 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+
+const CONTROL_PAGE = String.raw`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AOS-Bridge Control</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 48rem; padding: 0 1rem; }
+    textarea { box-sizing: border-box; min-height: 9rem; width: 100%; }
+    button { margin-top: 0.75rem; padding: 0.5rem 1rem; }
+    pre { background: #f3f4f6; overflow-wrap: anywhere; padding: 0.75rem; white-space: pre-wrap; }
+    #log { max-height: 12rem; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <h1>AOS-Bridge Control</h1>
+  <p>Bridge status: <strong id="bridge-status">Checking…</strong></p>
+  <form id="task-form">
+    <label for="prompt">Prompt</label>
+    <textarea id="prompt" name="prompt" required></textarea>
+    <button type="submit">Submit</button>
+  </form>
+  <p>Task id: <code id="task-id">—</code></p>
+  <p>Task status: <strong id="task-status">—</strong></p>
+  <h2>Result</h2>
+  <pre id="result">—</pre>
+  <h2>Log</h2>
+  <pre id="log"></pre>
+  <script>
+    (function () {
+      var bridgeStatus = document.getElementById("bridge-status");
+      var form = document.getElementById("task-form");
+      var prompt = document.getElementById("prompt");
+      var taskId = document.getElementById("task-id");
+      var taskStatus = document.getElementById("task-status");
+      var result = document.getElementById("result");
+      var log = document.getElementById("log");
+
+      function writeLog(message) {
+        log.textContent += message + "\n";
+        log.scrollTop = log.scrollHeight;
+      }
+
+      async function readJson(response) {
+        var payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload && payload.error && payload.error.message ? payload.error.message : "Bridge request failed");
+        }
+        return payload;
+      }
+
+      async function refreshHealth() {
+        try {
+          var health = await readJson(await fetch("/health"));
+          bridgeStatus.textContent = health.status;
+        } catch (error) {
+          bridgeStatus.textContent = "unavailable";
+          writeLog(error.message);
+        }
+      }
+
+      async function poll(id) {
+        var statusPayload = await readJson(await fetch("/api/v1/tasks/" + encodeURIComponent(id)));
+        taskStatus.textContent = statusPayload.status;
+        writeLog("Task status: " + statusPayload.status);
+
+        if (statusPayload.status === "completed") {
+          var resultPayload = await readJson(await fetch("/api/v1/tasks/" + encodeURIComponent(id) + "/result"));
+          result.textContent = resultPayload.output;
+          writeLog("Task completed");
+          return;
+        }
+
+        if (statusPayload.status === "failed" || statusPayload.status === "interrupted") {
+          throw new Error("Task ended with status " + statusPayload.status);
+        }
+
+        window.setTimeout(function () {
+          poll(id).catch(function (error) { writeLog(error.message); });
+        }, 1000);
+      }
+
+      form.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        var id = "control-" + Date.now();
+        result.textContent = "—";
+        taskStatus.textContent = "pending";
+        try {
+          var submitted = await readJson(await fetch("/api/v1/tasks", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ id: id, prompt: prompt.value })
+          }));
+          taskId.textContent = submitted.id;
+          writeLog("Submitted task " + submitted.id);
+          await poll(submitted.id);
+        } catch (error) {
+          writeLog(error.message);
+        }
+      });
+
+      refreshHealth();
+    }());
+  </script>
+</body>
+</html>`;

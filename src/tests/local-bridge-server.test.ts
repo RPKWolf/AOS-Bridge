@@ -31,6 +31,11 @@ test("validates requests and serves task submit, status, and result", async () =
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
+    const control = await fetch(`${baseUrl}/control`);
+    assert.equal(control.status, 200);
+    assert.match(control.headers.get("content-type") ?? "", /^text\/html; charset=utf-8$/);
+    assert.match(await control.text(), /<textarea id="prompt"/);
+
     const invalid = await fetch(`${baseUrl}/api/v1/tasks`, {
       method: "POST",
       headers: { "content-type": "application/json" },
