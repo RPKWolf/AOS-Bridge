@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import {
   AoProtocolError,
   AoRequestError,
+  AgentOrchestratorTimeoutError,
   BridgeError,
   InvalidRequestError,
   TaskNotCompletedError,
@@ -60,7 +61,7 @@ async function handleRequest(
 
   if (request.method === "POST" && url.pathname === "/api/v1/agent-task") {
     const prompt = parseAgentTask(await readJson(request));
-    writeJson(response, 202, gateway.submitAgentTask(prompt));
+    writeJson(response, 202, await gateway.submitAgentTask(prompt));
     return;
   }
 
@@ -163,6 +164,10 @@ function errorDetails(error: unknown): { status: number; code: string; message: 
 
   if (error instanceof AoRequestError || error instanceof AoProtocolError) {
     return { status: 502, code: "ORCHESTRATOR_ERROR", message: error.message };
+  }
+
+  if (error instanceof AgentOrchestratorTimeoutError) {
+    return { status: 504, code: "ORCHESTRATOR_TIMEOUT", message: error.message };
   }
 
   if (error instanceof BridgeError) {

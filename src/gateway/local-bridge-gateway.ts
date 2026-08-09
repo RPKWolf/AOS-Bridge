@@ -4,7 +4,7 @@ import {
   TaskUnavailableError,
 } from "../errors/bridge-error";
 import type { TaskHandle, TaskResult, TaskStatus } from "../types/task";
-import { AgentOrchestratorStub } from "./agent-orchestrator-stub";
+import type { AgentTaskAdapter } from "./agent-orchestrator-adapter";
 
 export interface SubmitTaskInput {
   id: string;
@@ -27,7 +27,7 @@ export class LocalBridgeGateway {
   public constructor(
     private readonly bridge: BridgeCore,
     private readonly taskDefaults: LocalGatewayTaskDefaults,
-    private readonly agentOrchestrator: AgentOrchestratorStub = new AgentOrchestratorStub(),
+    private readonly agentOrchestrator: AgentTaskAdapter,
   ) {}
 
   public async submitTask(input: SubmitTaskInput): Promise<TaskHandle> {
@@ -57,13 +57,13 @@ export class LocalBridgeGateway {
     return this.bridge.getTaskResult(this.getHandle(id));
   }
 
-  public submitAgentTask(prompt: string): AcceptedAgentTaskResponse {
+  public async submitAgentTask(prompt: string): Promise<AcceptedAgentTaskResponse> {
     if (typeof prompt !== "string") {
       throw new InvalidRequestError("Task prompt must be a string");
     }
 
     const taskId = `agent-task-${Date.now()}`;
-    const accepted = this.agentOrchestrator.accept({
+    const accepted = await this.agentOrchestrator.submitTask({
       id: taskId,
       prompt,
       provider: this.taskDefaults.provider,

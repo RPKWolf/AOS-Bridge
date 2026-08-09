@@ -5,6 +5,7 @@ import type { OrchestratorAdapter } from "../adapters/orchestrator-adapter";
 import { BridgeCore } from "../core/bridge-core";
 import { InMemoryTaskStore } from "../core/task-store";
 import { LocalBridgeGateway } from "../gateway/local-bridge-gateway";
+import { AgentOrchestratorAdapter } from "../gateway/agent-orchestrator-adapter";
 import { createLocalBridgeServer, listenOnLoopback } from "../gateway/local-bridge-server";
 import type { TaskStatus } from "../types/task";
 
@@ -24,6 +25,7 @@ test("validates requests and serves task submit, status, and result", async () =
   const gateway = new LocalBridgeGateway(
     new BridgeCore(adapter, new InMemoryTaskStore()),
     { provider: "local-gateway", orchestrator: "agent-orchestrator" },
+    new AgentOrchestratorAdapter(adapter),
   );
   const server = createLocalBridgeServer(gateway);
   await listenOnLoopback(server, 0);
