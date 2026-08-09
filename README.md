@@ -47,9 +47,9 @@ npm run bridge:cli -- run "PROMPT"
 
 The CLI communicates only with the local Bridge HTTP API.
 
-## ChatGPT Local Client
+## Chief Engineer Local Client
 
-The ChatGPT Local Client communicates only with the local Bridge HTTP API. It does not communicate directly with AO.
+The Chief Engineer Local Client communicates only with the local Bridge HTTP API. It does not communicate directly with AO. It can submit a task, read its status, and retrieve its final result.
 
 Start the Bridge server first:
 
@@ -60,7 +60,7 @@ npm run bridge:server
 Then run the local client:
 
 ```sh
-npm run chatgpt:local -- run "Hello"
+npm run chief-engineer:local -- run "Hello"
 ```
 
 Set `BRIDGE_URL` to override the default local endpoint `http://127.0.0.1:8787`.
