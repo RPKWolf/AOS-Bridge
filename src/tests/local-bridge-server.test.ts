@@ -48,6 +48,17 @@ test("validates requests and serves task submit, status, and result", async () =
     assert.match(acceptedBody.taskId, /^agent-task-\d+$/);
     assert.equal(acceptedBody.status, "accepted");
 
+    const agentStatus = await fetch(`${baseUrl}/api/v1/tasks/${acceptedBody.taskId}`);
+    assert.deepEqual(await agentStatus.json(), { id: acceptedBody.taskId, status: "running" });
+
+    status = "completed";
+    const agentResult = await fetch(`${baseUrl}/api/v1/tasks/${acceptedBody.taskId}/result`);
+    assert.deepEqual(await agentResult.json(), {
+      id: acceptedBody.taskId,
+      status: "completed",
+      output: "BRIDGE_OK",
+    });
+
     const invalid = await fetch(`${baseUrl}/api/v1/tasks`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -70,6 +81,7 @@ test("validates requests and serves task submit, status, and result", async () =
       status: "pending",
     });
 
+    status = "running";
     const current = await fetch(`${baseUrl}/api/v1/tasks/task-1`);
     assert.deepEqual(await current.json(), { id: "task-1", status: "running" });
 
