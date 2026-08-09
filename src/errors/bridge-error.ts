@@ -26,3 +26,5 @@ export class TaskUnavailableError extends BridgeError {}
 export class InvalidRequestError extends BridgeError {}
 
 export class InvalidConfigurationError extends BridgeError {}
+
+export class AgentOrchestratorTimeoutError extends BridgeError {}

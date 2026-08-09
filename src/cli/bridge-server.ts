@@ -3,6 +3,7 @@ import { BridgeCore } from "../core/bridge-core";
 import { InMemoryTaskStore } from "../core/task-store";
 import { InvalidConfigurationError } from "../errors/bridge-error";
 import { LocalBridgeGateway } from "../gateway/local-bridge-gateway";
+import { AgentOrchestratorAdapter } from "../gateway/agent-orchestrator-adapter";
 import { createLocalBridgeServer, listenOnLoopback } from "../gateway/local-bridge-server";
 
 async function main(): Promise<void> {
@@ -16,7 +17,7 @@ async function main(): Promise<void> {
   const gateway = new LocalBridgeGateway(bridge, {
     provider: "local-gateway",
     orchestrator: "agent-orchestrator",
-  });
+  }, new AgentOrchestratorAdapter(adapter));
   const server = createLocalBridgeServer(gateway);
 
   await listenOnLoopback(server, bridgePort());
