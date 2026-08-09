@@ -36,6 +36,16 @@ test("validates requests and serves task submit, status, and result", async () =
     assert.match(control.headers.get("content-type") ?? "", /^text\/html; charset=utf-8$/);
     assert.match(await control.text(), /<textarea id="prompt"/);
 
+    const accepted = await fetch(`${baseUrl}/api/v1/agent-task`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "stub task" }),
+    });
+    assert.equal(accepted.status, 202);
+    const acceptedBody = (await accepted.json()) as { taskId: string; status: string };
+    assert.match(acceptedBody.taskId, /^agent-task-\d+$/);
+    assert.equal(acceptedBody.status, "accepted");
+
     const invalid = await fetch(`${baseUrl}/api/v1/tasks`, {
       method: "POST",
       headers: { "content-type": "application/json" },

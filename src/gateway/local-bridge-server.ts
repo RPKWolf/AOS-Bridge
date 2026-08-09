@@ -58,6 +58,12 @@ async function handleRequest(
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/v1/agent-task") {
+    const prompt = parseAgentTask(await readJson(request));
+    writeJson(response, 202, gateway.submitAgentTask(prompt));
+    return;
+  }
+
   const taskMatch = /^\/api\/v1\/tasks\/([^/]+)$/.exec(url.pathname);
   if (request.method === "GET" && taskMatch) {
     const id = decodeTaskId(taskMatch[1]);
@@ -87,6 +93,14 @@ function parseSubmitTask(value: unknown): SubmitTaskInput {
   }
 
   return { id: value.id, prompt: value.prompt };
+}
+
+function parseAgentTask(value: unknown): string {
+  if (!isRecord(value) || typeof value.prompt !== "string") {
+    throw new InvalidRequestError("Request body must contain a string prompt field");
+  }
+
+  return value.prompt;
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
