@@ -50,10 +50,18 @@ export class LocalBridgeGateway {
   }
 
   public async getTaskStatus(id: string): Promise<TaskStatus> {
+    if (this.agentOrchestrator.hasTask(id)) {
+      return this.agentOrchestrator.getTaskStatus(id);
+    }
+
     return this.bridge.getTaskStatus(this.getHandle(id));
   }
 
   public async getTaskResult(id: string): Promise<TaskResult> {
+    if (this.agentOrchestrator.hasTask(id)) {
+      return this.agentOrchestrator.getTaskResult(id);
+    }
+
     return this.bridge.getTaskResult(this.getHandle(id));
   }
 

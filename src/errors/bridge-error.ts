@@ -28,3 +28,5 @@ export class InvalidRequestError extends BridgeError {}
 export class InvalidConfigurationError extends BridgeError {}
 
 export class AgentOrchestratorTimeoutError extends BridgeError {}
+
+export class AgentTaskFailedError extends BridgeError {}
