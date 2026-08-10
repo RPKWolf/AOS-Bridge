@@ -9,11 +9,13 @@ import type {
   OrchestrationRequest,
   OrchestrationStatus,
   ResultValidator,
+  WorkItem,
 } from "./contracts";
 
 export class OrchestrationCoordinator {
   private readonly outcomes = new Map<string, OrchestrationOutcome>();
   private readonly requests = new Map<string, OrchestrationRequest>();
+  private readonly workItems = new Map<string, WorkItem[]>();
 
   public constructor(
     private readonly selector: AgentSelector,
@@ -35,45 +37,30 @@ export class OrchestrationCoordinator {
 
     this.outcomes.set(request.id, outcome);
     this.requests.set(request.id, request);
+    this.workItems.set(request.id, [
+      {
+        id: `${request.id}:0`,
+        taskId,
+        iteration: 0,
+        prompt: request.prompt,
+        findings: [],
+      },
+    ]);
     return outcome;
   }
 
   public async execute(request: OrchestrationRequest): Promise<TaskResult | DecisionResult> {
     const outcome = await this.start(request);
+    const firstResult = await this.waitForCompletion(outcome);
+    const firstDecision = await this.applyDecision(outcome, firstResult);
 
-    while (true) {
-      const status = await this.getStatus(outcome.id);
-
-      if (status === "completed") {
-        const result = await this.bridgeTaskClient.getResult(outcome.taskId);
-        outcome.result = result;
-
-        if (!this.decisionAuthority) {
-          return result;
-        }
-
-        const decision = await this.decisionAuthority.decide(
-          this.getRequest(outcome.id),
-          result,
-        );
-        outcome.decision = decision;
-
-        if (decision.status === "PASS") {
-          return result;
-        }
-
-        outcome.status = "failed";
-        return decision;
-      }
-
-      if (status === "failed" || status === "interrupted") {
-        throw new TaskNotCompletedError(
-          `Orchestration ${outcome.id} ended with status ${status}`,
-        );
-      }
-
-      await delay(this.pollIntervalMilliseconds);
+    if (!isFailDecision(firstDecision)) {
+      return firstDecision;
     }
+
+    await this.startFollowUpIteration(outcome, request, firstDecision.findings);
+    const followUpResult = await this.waitForCompletion(outcome);
+    return this.applyDecision(outcome, followUpResult);
   }
 
   public async getStatus(id: string): Promise<OrchestrationStatus> {
@@ -96,6 +83,81 @@ export class OrchestrationCoordinator {
     }
 
     return outcome;
+  }
+
+  public getWorkItems(id: string): readonly WorkItem[] {
+    const workItems = this.workItems.get(id);
+
+    if (!workItems) {
+      throw new Error(`Orchestration ${id} was not found`);
+    }
+
+    return workItems;
+  }
+
+  private async waitForCompletion(outcome: OrchestrationOutcome): Promise<TaskResult> {
+    while (true) {
+      const status = await this.getStatus(outcome.id);
+
+      if (status === "completed") {
+        const result = await this.bridgeTaskClient.getResult(outcome.taskId);
+        outcome.result = result;
+        return result;
+      }
+
+      if (status === "failed" || status === "interrupted") {
+        throw new TaskNotCompletedError(
+          `Orchestration ${outcome.id} ended with status ${status}`,
+        );
+      }
+
+      await delay(this.pollIntervalMilliseconds);
+    }
+  }
+
+  private async applyDecision(
+    outcome: OrchestrationOutcome,
+    result: TaskResult,
+  ): Promise<TaskResult | DecisionResult> {
+    if (!this.decisionAuthority) {
+      return result;
+    }
+
+    const decision = await this.decisionAuthority.decide(this.getRequest(outcome.id), result);
+    outcome.decision = decision;
+
+    if (decision.status === "FAIL") {
+      outcome.status = "failed";
+      return decision;
+    }
+
+    return result;
+  }
+
+  private async startFollowUpIteration(
+    outcome: OrchestrationOutcome,
+    request: OrchestrationRequest,
+    findings: readonly string[],
+  ): Promise<void> {
+    const taskId = await this.bridgeTaskClient.submitTask(
+      formatFollowUpPrompt(request.prompt, findings),
+    );
+    const workItems = this.workItems.get(outcome.id);
+
+    if (!workItems) {
+      throw new Error(`Orchestration ${outcome.id} was not found`);
+    }
+
+    workItems.push({
+      id: `${outcome.id}:1`,
+      taskId,
+      iteration: 1,
+      prompt: request.prompt,
+      findings,
+    });
+    outcome.taskId = taskId;
+    outcome.status = "submitted";
+    outcome.result = undefined;
   }
 
   private getRequest(id: string): OrchestrationRequest {
@@ -123,6 +185,14 @@ export class OrchestrationCoordinator {
 
     return "completed";
   }
+}
+
+function formatFollowUpPrompt(prompt: string, findings: readonly string[]): string {
+  return `${prompt}\n\nDecision Authority findings:\n${findings.map((finding) => `- ${finding}`).join("\n")}`;
+}
+
+function isFailDecision(value: TaskResult | DecisionResult): value is DecisionResult {
+  return value.status === "FAIL";
 }
 
 function delay(milliseconds: number): Promise<void> {
