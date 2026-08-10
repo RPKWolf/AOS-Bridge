@@ -61,6 +61,14 @@ export interface DecisionAuthority {
   ): Promise<DecisionResult>;
 }
 
+export interface WorkItem {
+  id: string;
+  taskId: string;
+  iteration: number;
+  prompt: string;
+  findings: readonly string[];
+}
+
 export interface OrchestrationOutcome {
   id: string;
   taskId: string;

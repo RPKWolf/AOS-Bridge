@@ -3,6 +3,7 @@ import test from "node:test";
 import { CapabilityAgentSelector } from "../orchestration/agent-selector";
 import type {
   BridgeTaskClient,
+  DecisionAuthority,
   OrchestrationRequest,
   ResultValidator,
 } from "../orchestration/contracts";
@@ -169,7 +170,77 @@ test("returns the Bridge result on an authoritative PASS", async () => {
   });
 });
 
-test("returns DecisionResult findings on an authoritative FAIL without iterating", async () => {
+test("creates exactly one follow-up WorkItem after FAIL and returns its PASS result", async () => {
+  const submissions: string[] = [];
+  const decisions = [
+    { status: "FAIL" as const, findings: ["Add tests"], authorityId: "human" },
+    { status: "PASS" as const, findings: [], authorityId: "human" },
+  ];
+  const authority: DecisionAuthority = {
+    async decide() {
+      const decision = decisions.shift();
+
+      if (!decision) {
+        throw new Error("Unexpected decision request");
+      }
+
+      return decision;
+    },
+  };
+  const client: BridgeTaskClient = {
+    async submitTask(prompt) {
+      submissions.push(prompt);
+      return `task-${submissions.length}`;
+    },
+    async getStatus() {
+      return "completed";
+    },
+    async getResult(taskId) {
+      return {
+        id: taskId,
+        status: "completed",
+        output: taskId === "task-1" ? "first output" : "revised output",
+      };
+    },
+  };
+  const coordinator = new OrchestrationCoordinator(
+    new CapabilityAgentSelector([
+      { id: "chief-engineer", capabilities: { roles: ["implementation"], capabilities: ["implementation"] } },
+    ]),
+    client,
+    undefined,
+    0,
+    authority,
+  );
+
+  assert.deepEqual(await coordinator.execute(request), {
+    id: "task-2",
+    status: "completed",
+    output: "revised output",
+  });
+  assert.deepEqual(submissions, [
+    "Preserve this prompt",
+    "Preserve this prompt\n\nDecision Authority findings:\n- Add tests",
+  ]);
+  assert.deepEqual(coordinator.getWorkItems(request.id), [
+    {
+      id: "orchestration-1:0",
+      taskId: "task-1",
+      iteration: 0,
+      prompt: "Preserve this prompt",
+      findings: [],
+    },
+    {
+      id: "orchestration-1:1",
+      taskId: "task-2",
+      iteration: 1,
+      prompt: "Preserve this prompt",
+      findings: ["Add tests"],
+    },
+  ]);
+});
+
+test("stops after one follow-up iteration when the second decision is FAIL", async () => {
   let submitCount = 0;
   const client: BridgeTaskClient = {
     async submitTask() {
@@ -200,6 +271,6 @@ test("returns DecisionResult findings on an authoritative FAIL without iterating
     findings: ["Review rejected the output"],
     authorityId: "human",
   });
-  assert.equal(submitCount, 1);
+  assert.equal(submitCount, 2);
   assert.equal(coordinator.getOutcome(request.id).status, "failed");
 });
