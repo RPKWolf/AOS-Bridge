@@ -39,11 +39,13 @@ export interface AgentSelector {
   select(request: OrchestrationRequest): AgentProfile;
 }
 
-export interface ValidationDecision {
+export interface DecisionResult {
   status: DecisionStatus;
   findings: readonly string[];
   authorityId: string;
 }
+
+export type ValidationDecision = DecisionResult;
 
 export interface ResultValidator {
   validate(
@@ -52,11 +54,18 @@ export interface ResultValidator {
   ): Promise<ValidationDecision>;
 }
 
+export interface DecisionAuthority {
+  decide(
+    request: OrchestrationRequest,
+    result: TaskResult,
+  ): Promise<DecisionResult>;
+}
+
 export interface OrchestrationOutcome {
   id: string;
   taskId: string;
   agentId: string;
   status: OrchestrationStatus;
   result?: TaskResult;
-  decision?: ValidationDecision;
+  decision?: DecisionResult;
 }

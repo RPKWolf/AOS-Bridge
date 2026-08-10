@@ -3,6 +3,8 @@ import type { TaskResult, TaskStatus } from "../types/task";
 import type {
   AgentSelector,
   BridgeTaskClient,
+  DecisionAuthority,
+  DecisionResult,
   OrchestrationOutcome,
   OrchestrationRequest,
   OrchestrationStatus,
@@ -11,12 +13,14 @@ import type {
 
 export class OrchestrationCoordinator {
   private readonly outcomes = new Map<string, OrchestrationOutcome>();
+  private readonly requests = new Map<string, OrchestrationRequest>();
 
   public constructor(
     private readonly selector: AgentSelector,
     private readonly bridgeTaskClient: BridgeTaskClient,
     _resultValidator?: ResultValidator,
     private readonly pollIntervalMilliseconds = 1_000,
+    private readonly decisionAuthority?: DecisionAuthority,
   ) {}
 
   public async start(request: OrchestrationRequest): Promise<OrchestrationOutcome> {
@@ -30,10 +34,11 @@ export class OrchestrationCoordinator {
     };
 
     this.outcomes.set(request.id, outcome);
+    this.requests.set(request.id, request);
     return outcome;
   }
 
-  public async execute(request: OrchestrationRequest): Promise<TaskResult> {
+  public async execute(request: OrchestrationRequest): Promise<TaskResult | DecisionResult> {
     const outcome = await this.start(request);
 
     while (true) {
@@ -42,7 +47,23 @@ export class OrchestrationCoordinator {
       if (status === "completed") {
         const result = await this.bridgeTaskClient.getResult(outcome.taskId);
         outcome.result = result;
-        return result;
+
+        if (!this.decisionAuthority) {
+          return result;
+        }
+
+        const decision = await this.decisionAuthority.decide(
+          this.getRequest(outcome.id),
+          result,
+        );
+        outcome.decision = decision;
+
+        if (decision.status === "PASS") {
+          return result;
+        }
+
+        outcome.status = "failed";
+        return decision;
       }
 
       if (status === "failed" || status === "interrupted") {
@@ -75,6 +96,16 @@ export class OrchestrationCoordinator {
     }
 
     return outcome;
+  }
+
+  private getRequest(id: string): OrchestrationRequest {
+    const request = this.requests.get(id);
+
+    if (!request) {
+      throw new Error(`Orchestration request ${id} was not found`);
+    }
+
+    return request;
   }
 
   private resolveStatus(taskStatus: TaskStatus): OrchestrationStatus {
