@@ -74,7 +74,7 @@ A `WorkItem` SHALL link a role assignment to the existing Bridge task identifier
 
 ### Decision
 
-A decision SHALL be exactly `PASS` or `FAIL`. A `FAIL` decision MUST include actionable findings suitable for the next bounded iteration. A decision MUST be based on completed review or test work, not on an assumed worker success state.
+A decision SHALL be exactly `PASS` or `FAIL`. A `FAIL` decision MUST include actionable findings suitable for the next bounded iteration. A decision MUST be issued by an explicit Decision Authority and MUST be based on completed review or test evidence, not on an assumed worker success state.
 
 ## Lifecycle
 
@@ -94,9 +94,10 @@ created
 3. **Submit.** The executor SHALL call the existing Bridge task-submission API with the work instruction. It SHALL retain the returned Bridge task identifier.
 4. **Observe.** The executor SHALL poll the existing status endpoint at a policy-defined interval. It SHALL map only Bridge canonical statuses into the orchestration state.
 5. **Collect.** After `completed`, the executor SHALL obtain the existing Bridge task result and preserve its output unchanged.
-6. **Validate.** The coordinator SHALL submit the output or an immutable reference to it to designated Reviewer and/or Tester profiles. The validator SHALL return a `PASS` or `FAIL` decision with findings.
-7. **Iterate.** On `FAIL`, the coordinator SHALL stop if the iteration budget is exhausted. Otherwise it SHALL create a new work item with the original request, prior output, and findings. It MUST NOT overwrite a previous work item or result.
-8. **Terminate.** On `PASS`, `failed`, `interrupted`, compatibility failure, or exhausted budget, the coordinator SHALL publish one terminal orchestration outcome.
+6. **Validate.** The coordinator SHALL submit the output or an immutable reference to it to designated Reviewer and/or Tester profiles. Validators SHALL return review or test evidence for the Decision Authority.
+7. **Decide.** The coordinator SHALL obtain an explicit `PASS` or `FAIL` decision from the Decision Authority and record its identity, evidence, and findings.
+8. **Iterate.** On an authoritative `FAIL`, the coordinator SHALL stop if the iteration budget is exhausted. Otherwise it SHALL create a new work item with the original request, prior output, and findings. It MUST NOT overwrite a previous work item or result.
+9. **Terminate.** On an authoritative `PASS`, `failed`, `interrupted`, compatibility failure, or exhausted budget, the coordinator SHALL publish one terminal orchestration outcome.
 
 Transport errors from Bridge SHALL be surfaced without reinterpretation. Timeout policy belongs to the Orchestration Layer and MUST apply once per submitted work item; it MUST NOT create implicit retries.
 
@@ -152,12 +153,26 @@ interface WorkExecutor {
 }
 
 interface ResultValidator {
-  validate(request: OrchestrationRequest, result: TaskResult): Promise<ReviewDecision>;
+  validate(request: OrchestrationRequest, result: TaskResult): Promise<ValidationEvidence>;
 }
 
-interface ReviewDecision {
+interface ValidationEvidence {
+  readonly validatorId: string;
+  readonly findings: readonly string[];
+}
+
+interface DecisionAuthority {
+  readonly id: string;
+  decide(request: OrchestrationRequest, evidence: readonly ValidationEvidence[]): Promise<DecisionRecord>;
+}
+
+interface DecisionRecord {
+  readonly orchestrationId: string;
   readonly status: DecisionStatus;
   readonly findings: readonly string[];
+  readonly authorityId: string;
+  readonly evidence: readonly ValidationEvidence[];
+  readonly decidedAt: string;
 }
 
 interface OrchestrationCoordinator {
@@ -174,15 +189,34 @@ Selection SHALL use set containment: every required capability MUST be declared 
 
 For example, a task requiring `implementation` and `review` MAY select a Chief Engineer profile for implementation and a Reviewer profile for validation only if each profile declares its respective capability. The selector MUST fail explicitly when a required capability is unavailable.
 
+## Human / ChatGPT Decision Authority
+
+The final architectural or product decision MAY belong to a human, ChatGPT, or another explicitly defined Decision Authority. The Orchestration Layer SHALL execute workflow; it MUST NOT independently change, infer, or substitute architectural or product decisions.
+
+A Decision Authority SHALL be identified by a stable `authorityId` and SHALL issue an auditable `DecisionRecord`. The record MUST contain:
+
+- the authority identifier;
+- exactly one decision, `PASS` or `FAIL`;
+- the applicable work item or orchestration identifier;
+- the evidence or immutable references used for the decision;
+- findings, including actionable findings for `FAIL`; and
+- a decision timestamp.
+
+The authority MAY be a human operating through a UI or CLI, a ChatGPT integration, or another named system with an explicit decision contract. The Orchestration Layer MUST NOT treat a worker, reviewer, or tester response as final authority unless that actor is explicitly configured as the Decision Authority for the orchestration request.
+
+Upon an authoritative `PASS`, the Orchestration Layer SHALL accept the decision and terminate the task as completed. Upon an authoritative `FAIL`, it SHALL accept the decision, preserve the decision record, and either create a new bounded iteration using the findings or terminate as exhausted. The authority MAY also instruct task termination; the Orchestration Layer SHALL record and execute that instruction without altering its meaning.
+
+Decision capture and execution are additive control-plane behavior only. They MUST NOT change any Bridge HTTP endpoint, Bridge data contract, Agent Orchestrator API, BridgeCore behavior, or AO adapter behavior.
+
 ## Result control and PASS / FAIL
 
-Worker completion is not a PASS decision. A completed work item SHALL enter validation. `PASS` SHALL require a completed validator result with no blocking findings. `FAIL` SHALL contain structured or textual findings that identify the failed acceptance criterion.
+Worker completion is not a PASS decision. A completed work item SHALL enter validation, followed by an explicit Decision Authority decision. `PASS` SHALL require an authoritative decision based on completed evidence. `FAIL` SHALL contain structured or textual findings that identify the failed acceptance criterion.
 
 The coordinator SHALL keep the original output and every subsequent output immutable. The next iteration SHALL reference prior material rather than alter history. This makes review decisions reproducible and prevents a later agent from silently changing the recorded result.
 
 ## Iteration policy
 
-Automatic iteration SHALL be bounded by `maxIterations`. Each iteration MUST:
+Automatic iteration SHALL be bounded by `maxIterations`. Each iteration after an authoritative `FAIL` MUST:
 
 1. use a new Bridge task;
 2. preserve the original prompt;
@@ -222,7 +256,7 @@ This architecture is additive:
 | The layer becomes a hidden workflow engine inside Bridge. | Keep it outside BridgeCore and depend only on public Bridge clients. |
 | Unbounded cost or loops from repeated failures. | Require `maxIterations`; terminate as `exhausted`. |
 | Agent selection becomes vendor-specific. | Select only from declared capabilities; prohibit name-based routing. |
-| Reviewer output is ambiguous. | Require a canonical `PASS` or `FAIL` decision and actionable findings. |
+| Reviewer output is ambiguous. | Require a canonical, authoritative `PASS` or `FAIL` decision and actionable findings. |
 | Loss of traceability between iterations. | Preserve immutable work-item records and parent references. |
 | Bridge transport failures are obscured. | Propagate Bridge domain errors and do not add implicit retries. |
 
