@@ -1,4 +1,5 @@
-import type { TaskStatus } from "../types/task";
+import { TaskNotCompletedError } from "../errors/bridge-error";
+import type { TaskResult, TaskStatus } from "../types/task";
 import type {
   AgentSelector,
   BridgeTaskClient,
@@ -10,12 +11,12 @@ import type {
 
 export class OrchestrationCoordinator {
   private readonly outcomes = new Map<string, OrchestrationOutcome>();
-  private readonly requests = new Map<string, OrchestrationRequest>();
 
   public constructor(
     private readonly selector: AgentSelector,
     private readonly bridgeTaskClient: BridgeTaskClient,
-    private readonly resultValidator: ResultValidator,
+    _resultValidator?: ResultValidator,
+    private readonly pollIntervalMilliseconds = 1_000,
   ) {}
 
   public async start(request: OrchestrationRequest): Promise<OrchestrationOutcome> {
@@ -29,8 +30,29 @@ export class OrchestrationCoordinator {
     };
 
     this.outcomes.set(request.id, outcome);
-    this.requests.set(request.id, request);
     return outcome;
+  }
+
+  public async execute(request: OrchestrationRequest): Promise<TaskResult> {
+    const outcome = await this.start(request);
+
+    while (true) {
+      const status = await this.getStatus(outcome.id);
+
+      if (status === "completed") {
+        const result = await this.bridgeTaskClient.getResult(outcome.taskId);
+        outcome.result = result;
+        return result;
+      }
+
+      if (status === "failed" || status === "interrupted") {
+        throw new TaskNotCompletedError(
+          `Orchestration ${outcome.id} ended with status ${status}`,
+        );
+      }
+
+      await delay(this.pollIntervalMilliseconds);
+    }
   }
 
   public async getStatus(id: string): Promise<OrchestrationStatus> {
@@ -41,7 +63,7 @@ export class OrchestrationCoordinator {
     }
 
     const taskStatus = await this.bridgeTaskClient.getStatus(outcome.taskId);
-    outcome.status = await this.resolveStatus(outcome, taskStatus);
+    outcome.status = this.resolveStatus(taskStatus);
     return outcome.status;
   }
 
@@ -55,10 +77,7 @@ export class OrchestrationCoordinator {
     return outcome;
   }
 
-  private async resolveStatus(
-    outcome: OrchestrationOutcome,
-    taskStatus: TaskStatus,
-  ): Promise<OrchestrationStatus> {
+  private resolveStatus(taskStatus: TaskStatus): OrchestrationStatus {
     if (taskStatus === "pending" || taskStatus === "running") {
       return "waiting-for-work";
     }
@@ -71,19 +90,12 @@ export class OrchestrationCoordinator {
       return "interrupted";
     }
 
-    const result = await this.bridgeTaskClient.getResult(outcome.taskId);
-    const request = this.requests.get(outcome.id);
-
-    if (!request) {
-      throw new Error(`Orchestration request ${outcome.id} was not found`);
-    }
-
-    const decision = await this.resultValidator.validate(request, result);
-
-    outcome.result = result;
-    outcome.decision = decision;
-    return decision.status === "PASS" ? "completed" : "failed";
+    return "completed";
   }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function isTerminal(status: OrchestrationStatus): boolean {

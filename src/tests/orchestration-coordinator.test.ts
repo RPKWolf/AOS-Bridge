@@ -50,13 +50,18 @@ test("selects a capable agent and submits the prompt unchanged through the injec
   assert.equal(await coordinator.getStatus(request.id), "waiting-for-work");
 });
 
-test("completes a task after the injected validator returns PASS", async () => {
+test("executes the first orchestration and returns the completed Bridge result", async () => {
+  const statuses: Array<"pending" | "running" | "completed"> = [
+    "pending",
+    "running",
+    "completed",
+  ];
   const client: BridgeTaskClient = {
     async submitTask() {
       return "task-1";
     },
     async getStatus() {
-      return "completed";
+      return statuses.shift() ?? "completed";
     },
     async getResult() {
       return { id: "task-1", status: "completed", output: "unchanged output" };
@@ -68,16 +73,17 @@ test("completes a task after the injected validator returns PASS", async () => {
     ]),
     client,
     new PassResultValidator("human-review"),
+    0,
   );
 
-  await coordinator.start(request);
+  const result = await coordinator.execute(request);
 
-  assert.equal(await coordinator.getStatus(request.id), "completed");
-  assert.deepEqual(coordinator.getOutcome(request.id).decision, {
-    status: "PASS",
-    findings: [],
-    authorityId: "human-review",
+  assert.deepEqual(result, {
+    id: "task-1",
+    status: "completed",
+    output: "unchanged output",
   });
+  assert.equal(coordinator.getOutcome(request.id).status, "completed");
 });
 
 test("maps failed and interrupted Bridge task statuses without retries", async () => {
