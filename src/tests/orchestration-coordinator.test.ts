@@ -6,6 +6,7 @@ import type {
   OrchestrationRequest,
   ResultValidator,
 } from "../orchestration/contracts";
+import { ManualDecisionAuthority } from "../orchestration/manual-decision-authority";
 import { OrchestrationCoordinator } from "../orchestration/orchestration-coordinator";
 import { PassResultValidator } from "../orchestration/result-validator";
 
@@ -120,4 +121,85 @@ test("PassResultValidator returns an auditable PASS decision", async () => {
     await validator.validate(request, { id: "task-1", status: "completed" }),
     { status: "PASS", findings: [], authorityId: "mvp-authority" },
   );
+});
+
+test("ManualDecisionAuthority returns the supplied PASS or FAIL decision", async () => {
+  const completed = { id: "task-1", status: "completed" as const };
+  const pass = new ManualDecisionAuthority("PASS", [], "human");
+  const fail = new ManualDecisionAuthority("FAIL", ["Add test coverage"], "chatgpt");
+
+  assert.deepEqual(await pass.decide(request, completed), {
+    status: "PASS",
+    findings: [],
+    authorityId: "human",
+  });
+  assert.deepEqual(await fail.decide(request, completed), {
+    status: "FAIL",
+    findings: ["Add test coverage"],
+    authorityId: "chatgpt",
+  });
+});
+
+test("returns the Bridge result on an authoritative PASS", async () => {
+  const client: BridgeTaskClient = {
+    async submitTask() {
+      return "task-1";
+    },
+    async getStatus() {
+      return "completed";
+    },
+    async getResult() {
+      return { id: "task-1", status: "completed", output: "final output" };
+    },
+  };
+  const coordinator = new OrchestrationCoordinator(
+    new CapabilityAgentSelector([
+      { id: "chief-engineer", capabilities: { roles: ["implementation"], capabilities: ["implementation"] } },
+    ]),
+    client,
+    undefined,
+    0,
+    new ManualDecisionAuthority("PASS", [], "human"),
+  );
+
+  assert.deepEqual(await coordinator.execute(request), {
+    id: "task-1",
+    status: "completed",
+    output: "final output",
+  });
+});
+
+test("returns DecisionResult findings on an authoritative FAIL without iterating", async () => {
+  let submitCount = 0;
+  const client: BridgeTaskClient = {
+    async submitTask() {
+      submitCount += 1;
+      return "task-1";
+    },
+    async getStatus() {
+      return "completed";
+    },
+    async getResult() {
+      return { id: "task-1", status: "completed", output: "final output" };
+    },
+  };
+  const coordinator = new OrchestrationCoordinator(
+    new CapabilityAgentSelector([
+      { id: "chief-engineer", capabilities: { roles: ["implementation"], capabilities: ["implementation"] } },
+    ]),
+    client,
+    undefined,
+    0,
+    new ManualDecisionAuthority("FAIL", ["Review rejected the output"], "human"),
+  );
+
+  const result = await coordinator.execute(request);
+
+  assert.deepEqual(result, {
+    status: "FAIL",
+    findings: ["Review rejected the output"],
+    authorityId: "human",
+  });
+  assert.equal(submitCount, 1);
+  assert.equal(coordinator.getOutcome(request.id).status, "failed");
 });
