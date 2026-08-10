@@ -172,6 +172,7 @@ interface DecisionRecord {
   readonly findings: readonly string[];
   readonly authorityId: string;
   readonly evidence: readonly ValidationEvidence[];
+  readonly nextAction: "iterate" | "terminate";
   readonly decidedAt: string;
 }
 
@@ -200,11 +201,12 @@ A Decision Authority SHALL be identified by a stable `authorityId` and SHALL iss
 - the applicable work item or orchestration identifier;
 - the evidence or immutable references used for the decision;
 - findings, including actionable findings for `FAIL`; and
+- an explicit next action of `iterate` or `terminate`; and
 - a decision timestamp.
 
 The authority MAY be a human operating through a UI or CLI, a ChatGPT integration, or another named system with an explicit decision contract. The Orchestration Layer MUST NOT treat a worker, reviewer, or tester response as final authority unless that actor is explicitly configured as the Decision Authority for the orchestration request.
 
-Upon an authoritative `PASS`, the Orchestration Layer SHALL accept the decision and terminate the task as completed. Upon an authoritative `FAIL`, it SHALL accept the decision, preserve the decision record, and either create a new bounded iteration using the findings or terminate as exhausted. The authority MAY also instruct task termination; the Orchestration Layer SHALL record and execute that instruction without altering its meaning.
+Upon an authoritative `PASS`, the Orchestration Layer SHALL accept the decision and terminate the task as completed. Upon an authoritative `FAIL`, the Decision Authority MAY provide findings and SHALL direct either a new bounded iteration or termination through `nextAction`. The Orchestration Layer SHALL preserve the decision record and execute that instruction without changing or replacing it. It SHALL create a new iteration only when `nextAction` is `iterate` and the iteration budget remains available; otherwise it SHALL terminate as exhausted or as directed.
 
 Decision capture and execution are additive control-plane behavior only. They MUST NOT change any Bridge HTTP endpoint, Bridge data contract, Agent Orchestrator API, BridgeCore behavior, or AO adapter behavior.
 
