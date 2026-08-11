@@ -156,6 +156,11 @@ interface ResultValidator {
   validate(request: OrchestrationRequest, result: TaskResult): Promise<ValidationEvidence>;
 }
 
+interface ValidatedResult {
+  readonly result: TaskResult;
+  readonly validation: ValidationEvidence;
+}
+
 interface ValidationEvidence {
   readonly validatorId: string;
   readonly findings: readonly string[];
@@ -163,7 +168,7 @@ interface ValidationEvidence {
 
 interface DecisionAuthority {
   readonly id: string;
-  decide(request: OrchestrationRequest, evidence: readonly ValidationEvidence[]): Promise<DecisionRecord>;
+  decide(request: OrchestrationRequest, validatedResult: ValidatedResult): Promise<DecisionRecord>;
 }
 
 interface DecisionRecord {
@@ -213,6 +218,8 @@ Decision capture and execution are additive control-plane behavior only. They MU
 ## Result control and PASS / FAIL
 
 Worker completion is not a PASS decision. A completed work item SHALL enter validation, followed by an explicit Decision Authority decision. `PASS` SHALL require an authoritative decision based on completed evidence. `FAIL` SHALL contain structured or textual findings that identify the failed acceptance criterion.
+
+The implementation has two explicit modes. In **validated mode**, a `ResultValidator` is configured and every worker result passes through it before it can be returned as a successful result or supplied to a `DecisionAuthority`. In **Pilot Mode**, no validator is configured: the coordinator records the completed worker result for observation but returns a `PILOT` outcome, never the worker output as a final successful orchestration result, and does not invoke a `DecisionAuthority`. Pilot Mode is therefore not a substitute for full orchestration.
 
 The coordinator SHALL keep the original output and every subsequent output immutable. The next iteration SHALL reference prior material rather than alter history. This makes review decisions reproducible and prevents a later agent from silently changing the recorded result.
 

@@ -2,6 +2,8 @@ import type { TaskResult, TaskStatus } from "../types/task";
 
 export type DecisionStatus = "PASS" | "FAIL";
 
+export type OrchestrationMode = "validated" | "pilot";
+
 export type OrchestrationStatus =
   | "created"
   | "selecting-agent"
@@ -9,6 +11,7 @@ export type OrchestrationStatus =
   | "waiting-for-work"
   | "validating"
   | "completed"
+  | "pilot-completed"
   | "failed"
   | "interrupted";
 
@@ -47,6 +50,19 @@ export interface DecisionResult {
 
 export type ValidationDecision = DecisionResult;
 
+export interface ValidatedResult {
+  result: TaskResult;
+  validation: ValidationDecision;
+}
+
+export interface PilotResult {
+  mode: "pilot";
+  status: "PILOT";
+  findings: readonly string[];
+}
+
+export type OrchestrationExecutionResult = TaskResult | DecisionResult | PilotResult;
+
 export interface ResultValidator {
   validate(
     request: OrchestrationRequest,
@@ -57,7 +73,7 @@ export interface ResultValidator {
 export interface DecisionAuthority {
   decide(
     request: OrchestrationRequest,
-    result: TaskResult,
+    validatedResult: ValidatedResult,
   ): Promise<DecisionResult>;
 }
 
@@ -73,7 +89,9 @@ export interface OrchestrationOutcome {
   id: string;
   taskId: string;
   agentId: string;
+  mode: OrchestrationMode;
   status: OrchestrationStatus;
   result?: TaskResult;
+  validation?: ValidationDecision;
   decision?: DecisionResult;
 }
