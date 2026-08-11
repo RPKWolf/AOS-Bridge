@@ -30,6 +30,7 @@ export interface OrchestrationRequest {
   prompt: string;
   requiredCapabilities: readonly string[];
   maxIterations: number;
+  operationArtifacts?: OperationArtifacts;
 }
 
 export interface BridgeTaskClient {
@@ -61,7 +62,11 @@ export interface PilotResult {
   findings: readonly string[];
 }
 
-export type OrchestrationExecutionResult = TaskResult | DecisionResult | PilotResult;
+export type OrchestrationExecutionResult =
+  | TaskResult
+  | DecisionResult
+  | VerificationResult
+  | PilotResult;
 
 export interface ResultValidator {
   validate(
@@ -75,6 +80,32 @@ export interface DecisionAuthority {
     request: OrchestrationRequest,
     validatedResult: ValidatedResult,
   ): Promise<DecisionResult>;
+}
+
+export interface OperationArtifacts {
+  commit?: string;
+  pullRequest?: number;
+  files?: readonly string[];
+  testsPassed?: boolean;
+  gitDiffCheckPassed?: boolean;
+}
+
+export interface OperationResult {
+  id: string;
+  taskResult: TaskResult;
+  declaredArtifacts: OperationArtifacts;
+}
+
+export interface VerificationResult {
+  status: DecisionStatus;
+  findings: readonly string[];
+  evidence: readonly string[];
+  verifiedArtifacts: readonly string[];
+  timestamp: string;
+}
+
+export interface OperationVerifier {
+  verify(operation: OperationResult): Promise<VerificationResult>;
 }
 
 export interface WorkItem {
@@ -94,4 +125,5 @@ export interface OrchestrationOutcome {
   result?: TaskResult;
   validation?: ValidationDecision;
   decision?: DecisionResult;
+  verification?: VerificationResult;
 }

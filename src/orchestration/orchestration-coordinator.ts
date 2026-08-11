@@ -6,12 +6,15 @@ import type {
   DecisionAuthority,
   DecisionResult,
   OrchestrationExecutionResult,
+  OperationVerifier,
   OrchestrationOutcome,
   OrchestrationRequest,
   OrchestrationStatus,
   PilotResult,
   ResultValidator,
   ValidatedResult,
+  ValidationDecision,
+  VerificationResult,
   WorkItem,
 } from "./contracts";
 
@@ -29,6 +32,7 @@ export class OrchestrationCoordinator {
     private readonly resultValidator?: ResultValidator,
     private readonly pollIntervalMilliseconds = 1_000,
     private readonly decisionAuthority?: DecisionAuthority,
+    private readonly operationVerifier?: OperationVerifier,
   ) {}
 
   public async start(request: OrchestrationRequest): Promise<OrchestrationOutcome> {
@@ -61,7 +65,11 @@ export class OrchestrationCoordinator {
     const firstResult = await this.waitForCompletion(outcome);
     const firstDecision = await this.applyDecision(outcome, firstResult);
 
-    if (!isFailDecision(firstDecision) || !outcome.decision) {
+    if (
+      !isFailResult(firstDecision) ||
+      request.maxIterations < 1 ||
+      (!outcome.decision && !outcome.verification)
+    ) {
       return firstDecision;
     }
 
@@ -143,8 +151,7 @@ export class OrchestrationCoordinator {
     const validatedResult: ValidatedResult = { result, validation };
 
     if (!this.decisionAuthority) {
-      outcome.status = "completed";
-      return result;
+      return this.verifyOperation(outcome, result, validation);
     }
 
     const decision = await this.decisionAuthority.decide(
@@ -158,6 +165,37 @@ export class OrchestrationCoordinator {
       return decision;
     }
 
+    return this.verifyOperation(outcome, result, validation);
+  }
+
+  private async verifyOperation(
+    outcome: OrchestrationOutcome,
+    result: TaskResult,
+    validation: ValidationDecision,
+  ): Promise<OrchestrationExecutionResult> {
+    if (!this.operationVerifier) {
+      outcome.status = "completed";
+      return result;
+    }
+
+    const verification = await this.operationVerifier.verify({
+      id: outcome.id,
+      taskResult: result,
+      declaredArtifacts: this.getRequest(outcome.id).operationArtifacts ?? {},
+    });
+    const verificationWithFindings = {
+      ...verification,
+      findings: mergeFindings(validation, verification.findings),
+    };
+
+    outcome.verification = verificationWithFindings;
+
+    if (verificationWithFindings.status === "FAIL") {
+      outcome.status = "failed";
+      return verificationWithFindings;
+    }
+
+    outcome.status = "completed";
     return result;
   }
 
@@ -187,6 +225,7 @@ export class OrchestrationCoordinator {
     outcome.result = undefined;
     outcome.validation = undefined;
     outcome.decision = undefined;
+    outcome.verification = undefined;
   }
 
   private getRequest(id: string): OrchestrationRequest {
@@ -228,8 +267,17 @@ function formatFollowUpPrompt(prompt: string, findings: readonly string[]): stri
   return `${prompt}\n\nDecision Authority findings:\n${findings.map((finding) => `- ${finding}`).join("\n")}`;
 }
 
-function isFailDecision(value: OrchestrationExecutionResult): value is DecisionResult {
+function isFailResult(
+  value: OrchestrationExecutionResult,
+): value is DecisionResult | VerificationResult {
   return value.status === "FAIL";
+}
+
+function mergeFindings(
+  validation: ValidationDecision | undefined,
+  findings: readonly string[],
+): readonly string[] {
+  return [...new Set([...(validation?.findings ?? []), ...findings])];
 }
 
 function delay(milliseconds: number): Promise<void> {

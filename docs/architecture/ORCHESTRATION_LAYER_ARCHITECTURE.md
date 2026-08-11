@@ -96,8 +96,9 @@ created
 5. **Collect.** After `completed`, the executor SHALL obtain the existing Bridge task result and preserve its output unchanged.
 6. **Validate.** The coordinator SHALL submit the output or an immutable reference to it to designated Reviewer and/or Tester profiles. Validators SHALL return review or test evidence for the Decision Authority.
 7. **Decide.** The coordinator SHALL obtain an explicit `PASS` or `FAIL` decision from the Decision Authority and record its identity, evidence, and findings.
-8. **Iterate.** On an authoritative `FAIL`, the coordinator SHALL stop if the iteration budget is exhausted. Otherwise it SHALL create a new work item with the original request, prior output, and findings. It MUST NOT overwrite a previous work item or result.
-9. **Terminate.** On an authoritative `PASS`, `failed`, `interrupted`, compatibility failure, or exhausted budget, the coordinator SHALL publish one terminal orchestration outcome.
+8. **Verify operation.** After a Decision Authority `PASS`, the coordinator SHALL pass the completed `OperationResult` to an injected `OperationVerifier`. Textual worker output, validator output, and a Decision Authority `PASS` MUST NOT alone close an operation.
+9. **Iterate.** On an authoritative `FAIL` or an operation-verification `FAIL`, the coordinator SHALL stop if the iteration budget is exhausted. Otherwise it SHALL create a new work item with the original request, prior output, validator findings, and verification findings. It MUST NOT overwrite a previous work item or result.
+10. **Terminate.** Only a Decision Authority `PASS` followed by operation-verification `PASS`, or a terminal task failure, interruption, compatibility failure, or exhausted budget, SHALL publish a terminal orchestration outcome.
 
 Transport errors from Bridge SHALL be surfaced without reinterpretation. Timeout policy belongs to the Orchestration Layer and MUST apply once per submitted work item; it MUST NOT create implicit retries.
 
@@ -181,6 +182,32 @@ interface DecisionRecord {
   readonly decidedAt: string;
 }
 
+interface OperationArtifacts {
+  readonly commit?: string;
+  readonly pullRequest?: number;
+  readonly files?: readonly string[];
+  readonly testsPassed?: boolean;
+  readonly gitDiffCheckPassed?: boolean;
+}
+
+interface OperationVerifier {
+  verify(operation: OperationResult): Promise<VerificationResult>;
+}
+
+interface OperationResult {
+  readonly id: string;
+  readonly taskResult: TaskResult;
+  readonly declaredArtifacts: OperationArtifacts;
+}
+
+interface VerificationResult {
+  readonly status: DecisionStatus;
+  readonly findings: readonly string[];
+  readonly evidence: readonly string[];
+  readonly verifiedArtifacts: readonly string[];
+  readonly timestamp: string;
+}
+
 interface OrchestrationCoordinator {
   start(request: OrchestrationRequest): Promise<OrchestrationOutcome>;
   getStatus(id: string): Promise<OrchestrationStatus>;
@@ -188,6 +215,22 @@ interface OrchestrationCoordinator {
 ```
 
 `BridgeTaskClient` SHALL be implemented using the existing Bridge API client. `WorkExecutor` MAY hold one `BridgeTaskClient` per logical agent profile, but all implementations MUST remain Bridge-only clients. `AgentSelector` and `ResultValidator` SHALL be deterministic for equal inputs and profile declarations.
+
+## Operation Verification
+
+Operation Verification SHALL establish objective evidence for declared artefacts after every completed operation. It SHALL be injected into the Orchestration Layer and MUST NOT be implemented in BridgeCore, the Bridge HTTP layer, or an AO adapter.
+
+For the v1 pilot, the verifier SHALL support checking:
+
+- that a declared Git commit exists;
+- that a declared pull request exists;
+- that each declared required file exists;
+- that declared tests pass; and
+- that declared `git diff --check` passes.
+
+The verifier MUST execute or inspect the applicable objective source. It MUST NOT accept a worker's textual assertion that an artefact exists or that a command passed. A verification result SHALL contain `PASS` or `FAIL`, evidence, verified artefacts, findings, and a timestamp.
+
+If verification returns `FAIL`, the coordinator SHALL create a new bounded corrective WorkItem only when `maxIterations` permits it. The corrective task SHALL preserve the original prompt and add validator findings and verification findings as separate context. A verifier failure MUST NOT be retried as a transport retry and MUST NOT create parallel work.
 
 ## Agent selection
 
@@ -217,7 +260,7 @@ Decision capture and execution are additive control-plane behavior only. They MU
 
 ## Result control and PASS / FAIL
 
-Worker completion is not a PASS decision. A completed work item SHALL enter validation, followed by an explicit Decision Authority decision. `PASS` SHALL require an authoritative decision based on completed evidence. `FAIL` SHALL contain structured or textual findings that identify the failed acceptance criterion.
+Worker completion is not a PASS decision. A completed work item SHALL enter validation, followed by an explicit Decision Authority decision and objective operation verification. `PASS` SHALL require both an authoritative decision and a verification result based on declared artefacts. `FAIL` SHALL contain structured or textual findings that identify the failed acceptance criterion.
 
 The implementation has two explicit modes. In **validated mode**, a `ResultValidator` is configured and every worker result passes through it before it can be returned as a successful result or supplied to a `DecisionAuthority`. In **Pilot Mode**, no validator is configured: the coordinator records the completed worker result for observation but returns a `PILOT` outcome, never the worker output as a final successful orchestration result, and does not invoke a `DecisionAuthority`. Pilot Mode is therefore not a substitute for full orchestration.
 
@@ -225,11 +268,11 @@ The coordinator SHALL keep the original output and every subsequent output immut
 
 ## Iteration policy
 
-Automatic iteration SHALL be bounded by `maxIterations`. Each iteration after an authoritative `FAIL` MUST:
+Automatic iteration SHALL be bounded by `maxIterations`. Each iteration after an authoritative `FAIL` or operation-verification `FAIL` MUST:
 
 1. use a new Bridge task;
 2. preserve the original prompt;
-3. include the prior output and `FAIL` findings as separate context; and
+3. include the prior output, validator findings, and verification findings as separate context; and
 4. record its parent work item and iteration number.
 
 The coordinator MUST terminate as `exhausted` when the budget is consumed. It MUST NOT retry a failed transport operation, reuse a failed task identifier, or continue after an interruption unless a future explicit resume contract is added.

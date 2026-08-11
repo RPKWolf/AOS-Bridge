@@ -4,6 +4,7 @@ import { CapabilityAgentSelector } from "../orchestration/agent-selector";
 import type {
   BridgeTaskClient,
   DecisionAuthority,
+  OperationVerifier,
   OrchestrationRequest,
   ResultValidator,
   ValidatedResult,
@@ -191,7 +192,7 @@ test("passes only the validated result to DecisionAuthority before returning an 
     authority,
   );
 
-  assert.deepEqual(await coordinator.execute(request), {
+  assert.deepEqual(await coordinator.execute({ ...request, maxIterations: 1 }), {
     id: "task-1",
     status: "completed",
     output: "final output",
@@ -245,7 +246,7 @@ test("creates exactly one follow-up WorkItem after FAIL and returns its PASS res
     authority,
   );
 
-  assert.deepEqual(await coordinator.execute(request), {
+  assert.deepEqual(await coordinator.execute({ ...request, maxIterations: 1 }), {
     id: "task-2",
     status: "completed",
     output: "revised output",
@@ -296,7 +297,7 @@ test("stops after one follow-up iteration when the second decision is FAIL", asy
     new ManualDecisionAuthority("FAIL", ["Review rejected the output"], "human"),
   );
 
-  const result = await coordinator.execute(request);
+  const result = await coordinator.execute({ ...request, maxIterations: 1 });
 
   assert.deepEqual(result, {
     status: "FAIL",
@@ -386,9 +387,79 @@ test("uses explicit Pilot Mode without returning worker output when validation i
   assert.equal(authorityCalled, false);
   assert.equal(coordinator.getOutcome(request.id).mode, "pilot");
   assert.equal(coordinator.getOutcome(request.id).status, "pilot-completed");
-  assert.deepEqual(coordinator.getOutcome(request.id).result, {
-    id: "task-1",
-    status: "completed",
-    output: "worker output",
-  });
+});
+
+test("creates one corrective WorkItem from validator and verification findings", async () => {
+  const submissions: string[] = [];
+  const client: BridgeTaskClient = {
+    async submitTask(prompt) {
+      submissions.push(prompt);
+      return `task-${submissions.length}`;
+    },
+    async getStatus() {
+      return "completed";
+    },
+    async getResult(taskId) {
+      return { id: taskId, status: "completed", output: taskId };
+    },
+  };
+  const validator: ResultValidator = {
+    async validate() {
+      return { status: "PASS", findings: ["Validator finding"], authorityId: "reviewer" };
+    },
+  };
+  const authority: DecisionAuthority = {
+    async decide() {
+      return { status: "PASS", findings: [], authorityId: "human" };
+    },
+  };
+  const verificationResults = [
+    {
+      status: "FAIL" as const,
+      findings: ["Verification finding"],
+      evidence: ["PR was not found"],
+      verifiedArtifacts: [],
+      timestamp: "2026-08-11T00:00:00.000Z",
+    },
+    {
+      status: "PASS" as const,
+      findings: [],
+      evidence: ["PR exists"],
+      verifiedArtifacts: ["pull request:1"],
+      timestamp: "2026-08-11T00:00:01.000Z",
+    },
+  ];
+  const verifier: OperationVerifier = {
+    async verify() {
+      const result = verificationResults.shift();
+
+      if (!result) {
+        throw new Error("Unexpected verification request");
+      }
+
+      return result;
+    },
+  };
+  const coordinator = new OrchestrationCoordinator(
+    new CapabilityAgentSelector([
+      { id: "chief-engineer", capabilities: { roles: ["implementation"], capabilities: ["implementation"] } },
+    ]),
+    client,
+    validator,
+    0,
+    authority,
+    verifier,
+  );
+
+  assert.deepEqual(
+    await coordinator.execute({ ...request, maxIterations: 1, operationArtifacts: { pullRequest: 1 } }),
+    { id: "task-2", status: "completed", output: "task-2" },
+  );
+  assert.equal(submissions.length, 2);
+  assert.match(submissions[1], /Validator finding/);
+  assert.match(submissions[1], /Verification finding/);
+  assert.deepEqual(coordinator.getWorkItems(request.id)[1].findings, [
+    "Validator finding",
+    "Verification finding",
+  ]);
 });
