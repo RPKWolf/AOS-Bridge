@@ -5,12 +5,18 @@ import type {
   BridgeTaskClient,
   DecisionAuthority,
   DecisionResult,
+  OrchestrationExecutionResult,
   OrchestrationOutcome,
   OrchestrationRequest,
   OrchestrationStatus,
+  PilotResult,
   ResultValidator,
+  ValidatedResult,
   WorkItem,
 } from "./contracts";
+
+const PILOT_MODE_FINDING =
+  "Pilot Mode: validation is disabled, so the worker output is not a final orchestration result.";
 
 export class OrchestrationCoordinator {
   private readonly outcomes = new Map<string, OrchestrationOutcome>();
@@ -20,7 +26,7 @@ export class OrchestrationCoordinator {
   public constructor(
     private readonly selector: AgentSelector,
     private readonly bridgeTaskClient: BridgeTaskClient,
-    _resultValidator?: ResultValidator,
+    private readonly resultValidator?: ResultValidator,
     private readonly pollIntervalMilliseconds = 1_000,
     private readonly decisionAuthority?: DecisionAuthority,
   ) {}
@@ -32,6 +38,7 @@ export class OrchestrationCoordinator {
       id: request.id,
       taskId,
       agentId: agent.id,
+      mode: this.resultValidator ? "validated" : "pilot",
       status: "submitted",
     };
 
@@ -49,12 +56,12 @@ export class OrchestrationCoordinator {
     return outcome;
   }
 
-  public async execute(request: OrchestrationRequest): Promise<TaskResult | DecisionResult> {
+  public async execute(request: OrchestrationRequest): Promise<OrchestrationExecutionResult> {
     const outcome = await this.start(request);
     const firstResult = await this.waitForCompletion(outcome);
     const firstDecision = await this.applyDecision(outcome, firstResult);
 
-    if (!isFailDecision(firstDecision)) {
+    if (!isFailDecision(firstDecision) || !outcome.decision) {
       return firstDecision;
     }
 
@@ -118,12 +125,32 @@ export class OrchestrationCoordinator {
   private async applyDecision(
     outcome: OrchestrationOutcome,
     result: TaskResult,
-  ): Promise<TaskResult | DecisionResult> {
+  ): Promise<OrchestrationExecutionResult> {
+    if (!this.resultValidator) {
+      outcome.status = "pilot-completed";
+      return this.createPilotResult();
+    }
+
+    outcome.status = "validating";
+    const validation = await this.resultValidator.validate(this.getRequest(outcome.id), result);
+    outcome.validation = validation;
+
+    if (validation.status === "FAIL") {
+      outcome.status = "failed";
+      return validation;
+    }
+
+    const validatedResult: ValidatedResult = { result, validation };
+
     if (!this.decisionAuthority) {
+      outcome.status = "completed";
       return result;
     }
 
-    const decision = await this.decisionAuthority.decide(this.getRequest(outcome.id), result);
+    const decision = await this.decisionAuthority.decide(
+      this.getRequest(outcome.id),
+      validatedResult,
+    );
     outcome.decision = decision;
 
     if (decision.status === "FAIL") {
@@ -158,6 +185,8 @@ export class OrchestrationCoordinator {
     outcome.taskId = taskId;
     outcome.status = "submitted";
     outcome.result = undefined;
+    outcome.validation = undefined;
+    outcome.decision = undefined;
   }
 
   private getRequest(id: string): OrchestrationRequest {
@@ -185,13 +214,21 @@ export class OrchestrationCoordinator {
 
     return "completed";
   }
+
+  private createPilotResult(): PilotResult {
+    return {
+      mode: "pilot",
+      status: "PILOT",
+      findings: [PILOT_MODE_FINDING],
+    };
+  }
 }
 
 function formatFollowUpPrompt(prompt: string, findings: readonly string[]): string {
   return `${prompt}\n\nDecision Authority findings:\n${findings.map((finding) => `- ${finding}`).join("\n")}`;
 }
 
-function isFailDecision(value: TaskResult | DecisionResult): value is DecisionResult {
+function isFailDecision(value: OrchestrationExecutionResult): value is DecisionResult {
   return value.status === "FAIL";
 }
 
@@ -200,5 +237,10 @@ function delay(milliseconds: number): Promise<void> {
 }
 
 function isTerminal(status: OrchestrationStatus): boolean {
-  return status === "completed" || status === "failed" || status === "interrupted";
+  return (
+    status === "completed" ||
+    status === "pilot-completed" ||
+    status === "failed" ||
+    status === "interrupted"
+  );
 }

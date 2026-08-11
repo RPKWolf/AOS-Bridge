@@ -6,6 +6,7 @@ import type {
   DecisionAuthority,
   OrchestrationRequest,
   ResultValidator,
+  ValidatedResult,
 } from "../orchestration/contracts";
 import { ManualDecisionAuthority } from "../orchestration/manual-decision-authority";
 import { OrchestrationCoordinator } from "../orchestration/orchestration-coordinator";
@@ -47,12 +48,13 @@ test("selects a capable agent and submits the prompt unchanged through the injec
     id: "orchestration-1",
     taskId: "task-1",
     agentId: "chief-engineer",
+    mode: "validated",
     status: "submitted",
   });
   assert.equal(await coordinator.getStatus(request.id), "waiting-for-work");
 });
 
-test("executes the first orchestration and returns the completed Bridge result", async () => {
+test("executes the first orchestration only after a PASS validation", async () => {
   const statuses: Array<"pending" | "running" | "completed"> = [
     "pending",
     "running",
@@ -74,7 +76,17 @@ test("executes the first orchestration and returns the completed Bridge result",
       { id: "chief-engineer", capabilities: { roles: ["implementation"], capabilities: ["implementation"] } },
     ]),
     client,
-    new PassResultValidator("human-review"),
+    {
+      async validate(validationRequest, validationResult) {
+        assert.equal(validationRequest, request);
+        assert.deepEqual(validationResult, {
+          id: "task-1",
+          status: "completed",
+          output: "unchanged output",
+        });
+        return { status: "PASS", findings: [], authorityId: "human-review" };
+      },
+    },
     0,
   );
 
@@ -86,6 +98,11 @@ test("executes the first orchestration and returns the completed Bridge result",
     output: "unchanged output",
   });
   assert.equal(coordinator.getOutcome(request.id).status, "completed");
+  assert.deepEqual(coordinator.getOutcome(request.id).validation, {
+    status: "PASS",
+    findings: [],
+    authorityId: "human-review",
+  });
 });
 
 test("maps failed and interrupted Bridge task statuses without retries", async () => {
@@ -126,22 +143,26 @@ test("PassResultValidator returns an auditable PASS decision", async () => {
 
 test("ManualDecisionAuthority returns the supplied PASS or FAIL decision", async () => {
   const completed = { id: "task-1", status: "completed" as const };
+  const validated: ValidatedResult = {
+    result: completed,
+    validation: { status: "PASS", findings: [], authorityId: "reviewer" },
+  };
   const pass = new ManualDecisionAuthority("PASS", [], "human");
   const fail = new ManualDecisionAuthority("FAIL", ["Add test coverage"], "chatgpt");
 
-  assert.deepEqual(await pass.decide(request, completed), {
+  assert.deepEqual(await pass.decide(request, validated), {
     status: "PASS",
     findings: [],
     authorityId: "human",
   });
-  assert.deepEqual(await fail.decide(request, completed), {
+  assert.deepEqual(await fail.decide(request, validated), {
     status: "FAIL",
     findings: ["Add test coverage"],
     authorityId: "chatgpt",
   });
 });
 
-test("returns the Bridge result on an authoritative PASS", async () => {
+test("passes only the validated result to DecisionAuthority before returning an authoritative PASS", async () => {
   const client: BridgeTaskClient = {
     async submitTask() {
       return "task-1";
@@ -153,20 +174,31 @@ test("returns the Bridge result on an authoritative PASS", async () => {
       return { id: "task-1", status: "completed", output: "final output" };
     },
   };
+  let authorityInput: ValidatedResult | undefined;
+  const authority: DecisionAuthority = {
+    async decide(_decisionRequest, validatedResult) {
+      authorityInput = validatedResult;
+      return { status: "PASS", findings: [], authorityId: "human" };
+    },
+  };
   const coordinator = new OrchestrationCoordinator(
     new CapabilityAgentSelector([
       { id: "chief-engineer", capabilities: { roles: ["implementation"], capabilities: ["implementation"] } },
     ]),
     client,
-    undefined,
+    new PassResultValidator("reviewer"),
     0,
-    new ManualDecisionAuthority("PASS", [], "human"),
+    authority,
   );
 
   assert.deepEqual(await coordinator.execute(request), {
     id: "task-1",
     status: "completed",
     output: "final output",
+  });
+  assert.deepEqual(authorityInput, {
+    result: { id: "task-1", status: "completed", output: "final output" },
+    validation: { status: "PASS", findings: [], authorityId: "reviewer" },
   });
 });
 
@@ -208,7 +240,7 @@ test("creates exactly one follow-up WorkItem after FAIL and returns its PASS res
       { id: "chief-engineer", capabilities: { roles: ["implementation"], capabilities: ["implementation"] } },
     ]),
     client,
-    undefined,
+    new PassResultValidator("reviewer"),
     0,
     authority,
   );
@@ -259,7 +291,7 @@ test("stops after one follow-up iteration when the second decision is FAIL", asy
       { id: "chief-engineer", capabilities: { roles: ["implementation"], capabilities: ["implementation"] } },
     ]),
     client,
-    undefined,
+    new PassResultValidator("reviewer"),
     0,
     new ManualDecisionAuthority("FAIL", ["Review rejected the output"], "human"),
   );
@@ -273,4 +305,90 @@ test("stops after one follow-up iteration when the second decision is FAIL", asy
   });
   assert.equal(submitCount, 2);
   assert.equal(coordinator.getOutcome(request.id).status, "failed");
+});
+
+test("does not return worker output or invoke DecisionAuthority when validation fails", async () => {
+  let authorityCalled = false;
+  const client: BridgeTaskClient = {
+    async submitTask() {
+      return "task-1";
+    },
+    async getStatus() {
+      return "completed";
+    },
+    async getResult() {
+      return { id: "task-1", status: "completed", output: "unvalidated output" };
+    },
+  };
+  const coordinator = new OrchestrationCoordinator(
+    new CapabilityAgentSelector([
+      { id: "chief-engineer", capabilities: { roles: ["implementation"], capabilities: ["implementation"] } },
+    ]),
+    client,
+    {
+      async validate() {
+        return { status: "FAIL", findings: ["Missing acceptance test"], authorityId: "reviewer" };
+      },
+    },
+    0,
+    {
+      async decide() {
+        authorityCalled = true;
+        return { status: "PASS", findings: [], authorityId: "human" };
+      },
+    },
+  );
+
+  assert.deepEqual(await coordinator.execute(request), {
+    status: "FAIL",
+    findings: ["Missing acceptance test"],
+    authorityId: "reviewer",
+  });
+  assert.equal(authorityCalled, false);
+  assert.equal(coordinator.getOutcome(request.id).status, "failed");
+});
+
+test("uses explicit Pilot Mode without returning worker output when validation is disabled", async () => {
+  let authorityCalled = false;
+  const client: BridgeTaskClient = {
+    async submitTask() {
+      return "task-1";
+    },
+    async getStatus() {
+      return "completed";
+    },
+    async getResult() {
+      return { id: "task-1", status: "completed", output: "worker output" };
+    },
+  };
+  const coordinator = new OrchestrationCoordinator(
+    new CapabilityAgentSelector([
+      { id: "chief-engineer", capabilities: { roles: ["implementation"], capabilities: ["implementation"] } },
+    ]),
+    client,
+    undefined,
+    0,
+    {
+      async decide() {
+        authorityCalled = true;
+        return { status: "PASS", findings: [], authorityId: "human" };
+      },
+    },
+  );
+
+  assert.deepEqual(await coordinator.execute(request), {
+    mode: "pilot",
+    status: "PILOT",
+    findings: [
+      "Pilot Mode: validation is disabled, so the worker output is not a final orchestration result.",
+    ],
+  });
+  assert.equal(authorityCalled, false);
+  assert.equal(coordinator.getOutcome(request.id).mode, "pilot");
+  assert.equal(coordinator.getOutcome(request.id).status, "pilot-completed");
+  assert.deepEqual(coordinator.getOutcome(request.id).result, {
+    id: "task-1",
+    status: "completed",
+    output: "worker output",
+  });
 });

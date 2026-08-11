@@ -1,9 +1,9 @@
-import type { TaskResult } from "../types/task";
 import type {
   DecisionAuthority,
   DecisionResult,
   DecisionStatus,
   OrchestrationRequest,
+  ValidatedResult,
 } from "./contracts";
 
 export class ManualDecisionAuthority implements DecisionAuthority {
@@ -15,7 +15,7 @@ export class ManualDecisionAuthority implements DecisionAuthority {
 
   public async decide(
     _request: OrchestrationRequest,
-    _result: TaskResult,
+    _validatedResult: ValidatedResult,
   ): Promise<DecisionResult> {
     return {
       status: this.decision,
