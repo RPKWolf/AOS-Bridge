@@ -12,6 +12,7 @@ import type {
 import { ManualDecisionAuthority } from "../orchestration/manual-decision-authority";
 import { OrchestrationCoordinator } from "../orchestration/orchestration-coordinator";
 import { PassResultValidator } from "../orchestration/result-validator";
+import { applyWorkExecutionPolicy, WORK_EXECUTION_POLICY } from "../orchestration/work-execution-policy";
 
 const request: OrchestrationRequest = {
   id: "orchestration-1",
@@ -20,7 +21,7 @@ const request: OrchestrationRequest = {
   maxIterations: 0,
 };
 
-test("selects a capable agent and submits the prompt unchanged through the injected Bridge client", async () => {
+test("selects a capable agent and submits the policy-bound prompt through the injected Bridge client", async () => {
   let submittedPrompt: string | undefined;
   const client: BridgeTaskClient = {
     async submitTask(prompt) {
@@ -44,7 +45,9 @@ test("selects a capable agent and submits the prompt unchanged through the injec
 
   const outcome = await coordinator.start(request);
 
-  assert.equal(submittedPrompt, request.prompt);
+  assert.equal(submittedPrompt, applyWorkExecutionPolicy(request.prompt));
+  assert.match(submittedPrompt, /Never start a duplicate instance blindly/);
+  assert.match(submittedPrompt, /IBKR execution is Paper-only/);
   assert.deepEqual(outcome, {
     id: "orchestration-1",
     taskId: "task-1",
@@ -252,8 +255,8 @@ test("creates exactly one follow-up WorkItem after FAIL and returns its PASS res
     output: "revised output",
   });
   assert.deepEqual(submissions, [
-    "Preserve this prompt",
-    "Preserve this prompt\n\nDecision Authority findings:\n- Add tests",
+    applyWorkExecutionPolicy("Preserve this prompt"),
+    applyWorkExecutionPolicy("Preserve this prompt\n\nDecision Authority findings:\n- Add tests"),
   ]);
   assert.deepEqual(coordinator.getWorkItems(request.id), [
     {
@@ -271,6 +274,55 @@ test("creates exactly one follow-up WorkItem after FAIL and returns its PASS res
       findings: ["Add tests"],
     },
   ]);
+});
+
+test("continues corrective iterations until PASS within the configured limit", async () => {
+  let submissionCount = 0;
+  const decisions = ["FAIL", "FAIL", "PASS"] as const;
+  let decisionIndex = 0;
+  const client: BridgeTaskClient = {
+    async submitTask(prompt) {
+      submissionCount += 1;
+      assert.match(prompt, /Mandatory execution policy/);
+      return `task-${submissionCount}`;
+    },
+    async getStatus() {
+      return "completed";
+    },
+    async getResult(taskId) {
+      return { id: taskId, status: "completed", output: `output-${taskId}` };
+    },
+  };
+  const authority: DecisionAuthority = {
+    async decide() {
+      const status = decisions[decisionIndex++];
+      return { status, findings: status === "FAIL" ? [`fix-${decisionIndex}`] : [], authorityId: "reviewer" };
+    },
+  };
+  const coordinator = new OrchestrationCoordinator(
+    new CapabilityAgentSelector([
+      { id: "chief-engineer", capabilities: { roles: ["implementation"], capabilities: ["implementation"] } },
+    ]),
+    client,
+    new PassResultValidator("validator"),
+    0,
+    authority,
+  );
+
+  assert.deepEqual(await coordinator.execute({ ...request, maxIterations: 2 }), {
+    id: "task-3",
+    status: "completed",
+    output: "output-task-3",
+  });
+  assert.equal(submissionCount, 3);
+  assert.deepEqual(coordinator.getWorkItems(request.id).map((item) => item.iteration), [0, 1, 2]);
+});
+
+test("mandatory Work policy is fail-closed for Live and guards duplicate runtime starts", () => {
+  assert.match(WORK_EXECUTION_POLICY, /inspect existing AOS, Immediate, Python Service, and npm runtime/);
+  assert.match(WORK_EXECUTION_POLICY, /Reuse a suitable existing runtime/);
+  assert.match(WORK_EXECUTION_POLICY, /start exactly one instance/);
+  assert.match(WORK_EXECUTION_POLICY, /Live configuration, account, route, or ambiguity as a blocker/);
 });
 
 test("stops after one follow-up iteration when the second decision is FAIL", async () => {
