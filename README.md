@@ -81,6 +81,19 @@ The command sends exactly `Reply only with: BRIDGE_OK` and prints the task handl
 - Task state is retained only in memory for the running process.
 - There is no persistence, retry policy, queue, timeout manager, logging system, streaming API, or AI-provider adapter.
 
+## Chief Engineer continuation
+
+The orchestration coordinator can accept an injected `ChiefEngineerContinuationPolicy`. After a
+validated terminal technical phase, the policy receives the full task result, validation,
+authority decision, operation-verification evidence, and iteration counters. It records a
+structured technical review and either completes, stops for one explicit user decision, reports a
+blocker, or submits one safe in-scope follow-up through the existing Bridge client.
+
+`maxIterations` bounds corrective `FAIL` work and `maxContinuations` independently bounds successful
+phase-to-phase continuation. A missing continuation policy or a missing continuation budget keeps
+the previous behavior. `getChiefEngineerHistory()` exposes the process-local audit trail, including
+the reason, next step, task identifier, counters, and timestamp for every continuation or stop.
+
 ## Roadmap
 
 1. Add additional orchestrator adapters behind the existing contract.
