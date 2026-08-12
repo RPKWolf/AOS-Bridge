@@ -98,6 +98,18 @@ export interface ChiefEngineerDecision {
   nextPrompt?: string;
   question?: string;
   recommendedOption?: string;
+  continuationAttestations?: ChiefEngineerContinuationAttestations;
+}
+
+export interface ChiefEngineerBoundaryAttestation {
+  preserved: boolean;
+  evidence: string;
+}
+
+export interface ChiefEngineerContinuationAttestations {
+  safety: ChiefEngineerBoundaryAttestation;
+  scope: ChiefEngineerBoundaryAttestation;
+  risk: ChiefEngineerBoundaryAttestation;
 }
 
 export interface ChiefEngineerReviewContext {

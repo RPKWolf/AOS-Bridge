@@ -34,6 +34,11 @@ function decision(action: ChiefEngineerDecision["action"], overrides = {}): Chie
     review,
     nextStep: "Run the approved follow-up",
     reason: "It is safe, deterministic, and remains in scope",
+    ...(action === "CONTINUE" ? { continuationAttestations: {
+      safety: { preserved: true, evidence: "No safety boundary changes" },
+      scope: { preserved: true, evidence: "The next phase remains within the approved objective" },
+      risk: { preserved: true, evidence: "Risk is unchanged" },
+    } } : {}),
     ...overrides,
   };
 }
@@ -193,4 +198,65 @@ test("audit history records every Chief Engineer decision and its reason", async
     { action: "COMPLETE", reason: "Evidence proves the objective is complete", taskId: "task-2", timestamp: "2026-08-12T12:00:00.000Z" },
   ]);
   assert.deepEqual(history[0].review, review);
+});
+
+test("policy rejection fails closed with an audited stop", async () => {
+  const { coordinator, submissions } = harness({ async review() {
+    throw new Error("review service unavailable");
+  } });
+  const result = await coordinator.execute(baseRequest);
+  assert.equal(result.status, "BLOCKED");
+  assert.match(result.reason, /failed closed: review service unavailable/);
+  assert.equal(submissions.length, 1);
+  assert.equal(coordinator.getOutcome(baseRequest.id).status, "blocked");
+  assert.deepEqual(coordinator.getChiefEngineerHistory(baseRequest.id).map(({ action, reason }) =>
+    ({ action, reason })), [{ action: "BLOCKED", reason: result.reason }]);
+});
+
+test("missing or negative boundary attestations stop before continuation submit", async () => {
+  for (const continuationAttestations of [undefined, {
+    safety: { preserved: true, evidence: "safe" },
+    scope: { preserved: true, evidence: "in scope" },
+    risk: { preserved: false, evidence: "risk changed" },
+  }]) {
+    const { coordinator, submissions } = harness({ async review() {
+      return decision("CONTINUE", { nextPrompt: "Unsafe phase", continuationAttestations });
+    } });
+    const result = await coordinator.execute({ ...baseRequest, id: `attestation-${String(continuationAttestations)}` });
+    assert.equal(result.status, "BLOCKED");
+    assert.match(result.reason, /failed closed/);
+    assert.equal(submissions.length, 1);
+  }
+});
+
+test("each review receives the active continuation request", async () => {
+  const prompts: string[] = [];
+  const decisions = [
+    decision("CONTINUE", { nextPrompt: "Execute phase two" }),
+    decision("CONTINUE", { nextPrompt: "Execute phase three" }),
+    decision("COMPLETE"),
+  ];
+  const { coordinator } = harness({ async review(context) {
+    prompts.push(context.request.prompt);
+    return decisions.shift()!;
+  } }, undefined, ["one", "two", "three"]);
+  await coordinator.execute({ ...baseRequest, maxContinuations: 2 });
+  assert.deepEqual(prompts, [baseRequest.prompt, "Execute phase two", "Execute phase three"]);
+});
+
+test("external callers cannot mutate nested Chief Engineer audit state", async () => {
+  const firstDecision = decision("CONTINUE", { nextPrompt: "Phase two" });
+  const decisions = [firstDecision, decision("COMPLETE")];
+  const { coordinator } = harness({ async review() { return decisions.shift()!; } });
+  await coordinator.execute(baseRequest);
+  (firstDecision.review.proven as string[])[0] = "policy tampered";
+  firstDecision.continuationAttestations!.safety.evidence = "policy tampered";
+  const exposed = coordinator.getChiefEngineerHistory(baseRequest.id) as unknown as ChiefEngineerDecision[];
+  (exposed[0].review.proven as string[])[0] = "tampered";
+  exposed[0].continuationAttestations!.safety.evidence = "tampered";
+  exposed.splice(1, 1);
+  const internal = coordinator.getChiefEngineerHistory(baseRequest.id);
+  assert.equal(internal.length, 2);
+  assert.equal(internal[0].review.proven[0], "Result and evidence were read");
+  assert.equal(internal[0].continuationAttestations!.safety.evidence, "No safety boundary changes");
 });

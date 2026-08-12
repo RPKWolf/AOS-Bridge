@@ -99,17 +99,23 @@ export class OrchestrationCoordinator {
         return decision;
       }
 
-      const chiefDecision = await this.continuationPolicy.review({
-        request,
-        result: decision,
-        taskResult: result,
-        validation: outcome.validation,
-        decision: outcome.decision,
-        verification: outcome.verification,
-        correctiveIterations: correctiveIteration,
-        continuationIteration,
-      });
-      validateChiefEngineerDecision(chiefDecision);
+      let chiefDecision: ChiefEngineerDecision;
+      try {
+        const policyDecision: unknown = await this.continuationPolicy.review({
+          request: this.getRequest(outcome.id),
+          result: decision,
+          taskResult: result,
+          validation: outcome.validation,
+          decision: outcome.decision,
+          verification: outcome.verification,
+          correctiveIterations: correctiveIteration,
+          continuationIteration,
+        });
+        validateChiefEngineerDecision(policyDecision);
+        chiefDecision = policyDecision;
+      } catch (error: unknown) {
+        return this.recordPolicyFailure(outcome, correctiveIteration, continuationIteration, error);
+      }
 
       if ((chiefDecision.action === "CONTINUE" || chiefDecision.action === "COMPLETE") &&
         isFailResult(decision)) {
@@ -173,7 +179,22 @@ export class OrchestrationCoordinator {
   public getChiefEngineerHistory(id: string): readonly ChiefEngineerAuditRecord[] {
     const history = this.chiefEngineerHistory.get(id);
     if (!history) throw new Error(`Orchestration ${id} was not found`);
-    return history;
+    return history.map((record) => ({
+      ...record,
+      review: {
+        proven: [...record.review.proven],
+        rootCause: [...record.review.rootCause],
+        fixed: [...record.review.fixed],
+        tests: [...record.review.tests],
+        unresolved: [...record.review.unresolved],
+        newProblems: [...record.review.newProblems],
+      },
+      continuationAttestations: record.continuationAttestations ? {
+        safety: { ...record.continuationAttestations.safety },
+        scope: { ...record.continuationAttestations.scope },
+        risk: { ...record.continuationAttestations.risk },
+      } : undefined,
+    }));
   }
 
   private async waitForCompletion(outcome: OrchestrationOutcome): Promise<TaskResult> {
@@ -332,7 +353,22 @@ export class OrchestrationCoordinator {
     continuationIteration: number,
     reason = decision.reason,
   ): ChiefEngineerAuditRecord {
-    const record = { ...decision, action, reason, taskId: outcome.taskId, correctiveIterations,
+    const record = {
+      ...decision,
+      review: {
+        proven: [...decision.review.proven],
+        rootCause: [...decision.review.rootCause],
+        fixed: [...decision.review.fixed],
+        tests: [...decision.review.tests],
+        unresolved: [...decision.review.unresolved],
+        newProblems: [...decision.review.newProblems],
+      },
+      continuationAttestations: decision.continuationAttestations ? {
+        safety: { ...decision.continuationAttestations.safety },
+        scope: { ...decision.continuationAttestations.scope },
+        risk: { ...decision.continuationAttestations.risk },
+      } : undefined,
+      action, reason, taskId: outcome.taskId, correctiveIterations,
       continuationIteration, timestamp: this.now() };
     this.chiefEngineerHistory.get(outcome.id)!.push(record);
     return record;
@@ -351,6 +387,27 @@ export class OrchestrationCoordinator {
     outcome.status = action === "LIMIT_REACHED" ? "continuation-limit-reached" : "blocked";
     return { status: action, reason, nextStep: record.nextStep,
       question: record.question, recommendedOption: record.recommendedOption };
+  }
+
+  private recordPolicyFailure(
+    outcome: OrchestrationOutcome,
+    correctiveIterations: number,
+    continuationIteration: number,
+    error: unknown,
+  ): ChiefEngineerStopResult {
+    const detail = error instanceof Error ? error.message : String(error);
+    const reason = `Chief Engineer continuation review failed closed: ${detail}`;
+    const decision: ChiefEngineerDecision = {
+      action: "BLOCKED",
+      review: {
+        proven: [], rootCause: [detail], fixed: [], tests: [],
+        unresolved: ["A valid continuation decision was not produced"], newProblems: [],
+      },
+      reason,
+      nextStep: "Correct the continuation policy decision and rerun review; no continuation was submitted",
+    };
+    return this.recordStop(outcome, decision, "BLOCKED", correctiveIterations,
+      continuationIteration, reason);
   }
 
   private getRequest(id: string): OrchestrationRequest {
