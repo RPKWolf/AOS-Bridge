@@ -203,8 +203,9 @@ const CONTROL_PAGE = String.raw`<!doctype html>
     <textarea id="prompt" name="prompt" required></textarea>
     <button type="submit">Submit</button>
   </form>
-  <p>Task id: <code id="task-id">—</code></p>
-  <p>Task status: <strong id="task-status">—</strong></p>
+  <p>Current task: <code id="task-id">—</code></p>
+  <p>Status: <strong id="task-status">—</strong></p>
+  <p>Heartbeat: <strong id="heartbeat">inactive</strong> (<span id="poll-count">0</span> polls)</p>
   <h2>Result</h2>
   <pre id="result">—</pre>
   <h2>Log</h2>
@@ -216,8 +217,12 @@ const CONTROL_PAGE = String.raw`<!doctype html>
       var prompt = document.getElementById("prompt");
       var taskId = document.getElementById("task-id");
       var taskStatus = document.getElementById("task-status");
+      var heartbeat = document.getElementById("heartbeat");
+      var pollCount = document.getElementById("poll-count");
       var result = document.getElementById("result");
       var log = document.getElementById("log");
+      var previousStatus = null;
+      var polls = 0;
 
       function writeLog(message) {
         log.textContent += message + "\n";
@@ -245,16 +250,24 @@ const CONTROL_PAGE = String.raw`<!doctype html>
       async function poll(id) {
         var statusPayload = await readJson(await fetch("/api/v1/tasks/" + encodeURIComponent(id)));
         taskStatus.textContent = statusPayload.status;
-        writeLog("Task status: " + statusPayload.status);
+        polls += 1;
+        pollCount.textContent = String(polls);
+        heartbeat.textContent = new Date().toLocaleTimeString() + " — active";
+        if (statusPayload.status !== previousStatus) {
+          writeLog(new Date().toLocaleTimeString() + " transition: " + (previousStatus || "submitted") + " → " + statusPayload.status);
+          previousStatus = statusPayload.status;
+        }
 
         if (statusPayload.status === "completed") {
           var resultPayload = await readJson(await fetch("/api/v1/tasks/" + encodeURIComponent(id) + "/result"));
           result.textContent = resultPayload.output;
+          heartbeat.textContent = new Date().toLocaleTimeString() + " — terminal";
           writeLog("Task completed");
           return;
         }
 
         if (statusPayload.status === "failed" || statusPayload.status === "interrupted") {
+          heartbeat.textContent = new Date().toLocaleTimeString() + " — terminal";
           throw new Error("Task ended with status " + statusPayload.status);
         }
 
@@ -266,6 +279,10 @@ const CONTROL_PAGE = String.raw`<!doctype html>
       form.addEventListener("submit", async function (event) {
         event.preventDefault();
         var id = "control-" + Date.now();
+        previousStatus = null;
+        polls = 0;
+        pollCount.textContent = "0";
+        heartbeat.textContent = "submitting";
         result.textContent = "—";
         taskStatus.textContent = "pending";
         try {

@@ -17,6 +17,7 @@ import type {
   VerificationResult,
   WorkItem,
 } from "./contracts";
+import { applyWorkExecutionPolicy } from "./work-execution-policy";
 
 const PILOT_MODE_FINDING =
   "Pilot Mode: validation is disabled, so the worker output is not a final orchestration result.";
@@ -37,7 +38,7 @@ export class OrchestrationCoordinator {
 
   public async start(request: OrchestrationRequest): Promise<OrchestrationOutcome> {
     const agent = this.selector.select(request);
-    const taskId = await this.bridgeTaskClient.submitTask(request.prompt);
+    const taskId = await this.bridgeTaskClient.submitTask(applyWorkExecutionPolicy(request.prompt));
     const outcome: OrchestrationOutcome = {
       id: request.id,
       taskId,
@@ -62,20 +63,20 @@ export class OrchestrationCoordinator {
 
   public async execute(request: OrchestrationRequest): Promise<OrchestrationExecutionResult> {
     const outcome = await this.start(request);
-    const firstResult = await this.waitForCompletion(outcome);
-    const firstDecision = await this.applyDecision(outcome, firstResult);
+    for (let iteration = 0; ; iteration += 1) {
+      const result = await this.waitForCompletion(outcome);
+      const decision = await this.applyDecision(outcome, result);
 
-    if (
-      !isFailResult(firstDecision) ||
-      request.maxIterations < 1 ||
-      (!outcome.decision && !outcome.verification)
-    ) {
-      return firstDecision;
+      if (
+        !isFailResult(decision) ||
+        iteration >= request.maxIterations ||
+        (!outcome.validation && !outcome.decision && !outcome.verification)
+      ) {
+        return decision;
+      }
+
+      await this.startFollowUpIteration(outcome, request, decision.findings, iteration + 1);
     }
-
-    await this.startFollowUpIteration(outcome, request, firstDecision.findings);
-    const followUpResult = await this.waitForCompletion(outcome);
-    return this.applyDecision(outcome, followUpResult);
   }
 
   public async getStatus(id: string): Promise<OrchestrationStatus> {
@@ -203,9 +204,10 @@ export class OrchestrationCoordinator {
     outcome: OrchestrationOutcome,
     request: OrchestrationRequest,
     findings: readonly string[],
+    iteration: number,
   ): Promise<void> {
     const taskId = await this.bridgeTaskClient.submitTask(
-      formatFollowUpPrompt(request.prompt, findings),
+      applyWorkExecutionPolicy(formatFollowUpPrompt(request.prompt, findings)),
     );
     const workItems = this.workItems.get(outcome.id);
 
@@ -214,9 +216,9 @@ export class OrchestrationCoordinator {
     }
 
     workItems.push({
-      id: `${outcome.id}:1`,
+      id: `${outcome.id}:${iteration}`,
       taskId,
-      iteration: 1,
+      iteration,
       prompt: request.prompt,
       findings,
     });

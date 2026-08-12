@@ -36,7 +36,13 @@ test("validates requests and serves task submit, status, and result", async () =
     const control = await fetch(`${baseUrl}/control`);
     assert.equal(control.status, 200);
     assert.match(control.headers.get("content-type") ?? "", /^text\/html; charset=utf-8$/);
-    assert.match(await control.text(), /<textarea id="prompt"/);
+    const controlPage = await control.text();
+    assert.match(controlPage, /<textarea id="prompt"/);
+    assert.match(controlPage, /Current task:/);
+    assert.match(controlPage, /id="heartbeat"/);
+    assert.match(controlPage, /id="poll-count"/);
+    assert.match(controlPage, /transition:/);
+    assert.match(controlPage, /— active/);
 
     const accepted = await fetch(`${baseUrl}/api/v1/agent-task`, {
       method: "POST",
