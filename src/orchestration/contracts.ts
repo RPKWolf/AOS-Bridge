@@ -12,6 +12,9 @@ export type OrchestrationStatus =
   | "validating"
   | "completed"
   | "pilot-completed"
+  | "awaiting-decision"
+  | "blocked"
+  | "continuation-limit-reached"
   | "failed"
   | "interrupted";
 
@@ -30,6 +33,8 @@ export interface OrchestrationRequest {
   prompt: string;
   requiredCapabilities: readonly string[];
   maxIterations: number;
+  /** Maximum number of new phases the Chief Engineer may start after technical completion. */
+  maxContinuations?: number;
   operationArtifacts?: OperationArtifacts;
 }
 
@@ -66,7 +71,65 @@ export type OrchestrationExecutionResult =
   | TaskResult
   | DecisionResult
   | VerificationResult
-  | PilotResult;
+  | PilotResult
+  | ChiefEngineerStopResult;
+
+export type ChiefEngineerAction =
+  | "CONTINUE"
+  | "COMPLETE"
+  | "USER_DECISION_REQUIRED"
+  | "BLOCKED"
+  | "LIMIT_REACHED";
+
+export interface ChiefEngineerTechnicalReview {
+  proven: readonly string[];
+  rootCause: readonly string[];
+  fixed: readonly string[];
+  tests: readonly string[];
+  unresolved: readonly string[];
+  newProblems: readonly string[];
+}
+
+export interface ChiefEngineerDecision {
+  action: Exclude<ChiefEngineerAction, "LIMIT_REACHED">;
+  review: ChiefEngineerTechnicalReview;
+  nextStep: string;
+  reason: string;
+  nextPrompt?: string;
+  question?: string;
+  recommendedOption?: string;
+}
+
+export interface ChiefEngineerReviewContext {
+  request: OrchestrationRequest;
+  result: OrchestrationExecutionResult;
+  taskResult: TaskResult;
+  validation?: ValidationDecision;
+  decision?: DecisionResult;
+  verification?: VerificationResult;
+  correctiveIterations: number;
+  continuationIteration: number;
+}
+
+export interface ChiefEngineerContinuationPolicy {
+  review(context: ChiefEngineerReviewContext): Promise<ChiefEngineerDecision>;
+}
+
+export type ChiefEngineerAuditRecord = Omit<ChiefEngineerDecision, "action"> & {
+  action: ChiefEngineerAction;
+  taskId: string;
+  correctiveIterations: number;
+  continuationIteration: number;
+  timestamp: string;
+};
+
+export interface ChiefEngineerStopResult {
+  status: Exclude<ChiefEngineerAction, "CONTINUE" | "COMPLETE">;
+  reason: string;
+  nextStep: string;
+  question?: string;
+  recommendedOption?: string;
+}
 
 export interface ResultValidator {
   validate(
@@ -114,6 +177,8 @@ export interface WorkItem {
   iteration: number;
   prompt: string;
   findings: readonly string[];
+  kind?: "corrective" | "continuation";
+  continuationIteration?: number;
 }
 
 export interface OrchestrationOutcome {
