@@ -97,6 +97,10 @@ export class AoRestAdapter implements OrchestratorAdapter {
     return this.routingAudit.get(taskId);
   }
 
+  public getResolvedProjectId(taskId: string): string | undefined {
+    return this.routingAudit.get(taskId)?.resolvedProjectId;
+  }
+
   private async resolveProject(request: TaskRequest): Promise<string> {
     const projectsResponse = await this.fetchJson("/api/v1/projects");
     const projectIds = this.getArray(projectsResponse, "projects", "projects response")

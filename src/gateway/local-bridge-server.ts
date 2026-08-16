@@ -11,10 +11,16 @@ import {
   UnsupportedAgentOrchestratorVersionError,
 } from "../errors/bridge-error";
 import { LocalBridgeGateway, type SubmitTaskInput } from "./local-bridge-gateway";
+import { loadBridgeMetadata, type BridgeMetadata } from "./bridge-metadata";
 
-export function createLocalBridgeServer(gateway: LocalBridgeGateway): Server {
+const BRIDGE_METADATA = loadBridgeMetadata();
+
+export function createLocalBridgeServer(
+  gateway: LocalBridgeGateway,
+  metadata: BridgeMetadata = BRIDGE_METADATA,
+): Server {
   return createServer((request, response) => {
-    void handleRequest(gateway, request, response).catch((error: unknown) => {
+    void handleRequest(gateway, metadata, request, response).catch((error: unknown) => {
       writeError(response, error);
     });
   });
@@ -32,6 +38,7 @@ export function listenOnLoopback(server: Server, port: number): Promise<void> {
 
 async function handleRequest(
   gateway: LocalBridgeGateway,
+  metadata: BridgeMetadata,
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
@@ -43,7 +50,7 @@ async function handleRequest(
   }
 
   if (request.method === "GET" && url.pathname === "/control") {
-    writeHtml(response, 200, CONTROL_PAGE);
+    writeHtml(response, 200, controlPage(metadata, gateway.getActiveProjectId()));
     return;
   }
 
@@ -202,7 +209,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-const CONTROL_PAGE = String.raw`<!doctype html>
+function controlPage(metadata: BridgeMetadata, projectId: string | undefined): string {
+  const version = escapeHtml(metadata.version);
+  const commit = escapeHtml(metadata.commit);
+  const project = escapeHtml(projectId ?? "none");
+  return String.raw`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -218,7 +229,12 @@ const CONTROL_PAGE = String.raw`<!doctype html>
 </head>
 <body>
   <h1>AOS-Bridge Control</h1>
-  <p>Bridge status: <strong id="bridge-status">Checking…</strong></p>
+  <div id="bridge-info">
+    <p>Version: <strong id="bridge-version">${version}</strong><br>
+    Commit: <strong id="bridge-commit">${commit}</strong><br>
+    Project: <strong id="bridge-project">${project}</strong><br>
+    Bridge status: <strong id="bridge-status">Checking…</strong></p>
+  </div>
   <form id="task-form">
     <label for="project-id">Project ID (optional)</label>
     <input id="project-id" name="projectId" type="text">
@@ -236,6 +252,7 @@ const CONTROL_PAGE = String.raw`<!doctype html>
   <script>
     (function () {
       var bridgeStatus = document.getElementById("bridge-status");
+      var bridgeProject = document.getElementById("bridge-project");
       var form = document.getElementById("task-form");
       var prompt = document.getElementById("prompt");
       var projectId = document.getElementById("project-id");
@@ -269,6 +286,14 @@ const CONTROL_PAGE = String.raw`<!doctype html>
           bridgeStatus.textContent = "unavailable";
           writeLog(error.message);
         }
+      }
+
+      async function refreshProject() {
+        var response = await fetch("/control");
+        if (!response.ok) throw new Error("Bridge project state refresh failed");
+        var page = new DOMParser().parseFromString(await response.text(), "text/html");
+        var currentProject = page.getElementById("bridge-project");
+        if (currentProject) bridgeProject.textContent = currentProject.textContent;
       }
 
       async function poll(id) {
@@ -319,6 +344,7 @@ const CONTROL_PAGE = String.raw`<!doctype html>
             ))
           }));
           taskId.textContent = submitted.id;
+          await refreshProject();
           writeLog("Submitted task " + submitted.id);
           await poll(submitted.id);
         } catch (error) {
@@ -331,3 +357,13 @@ const CONTROL_PAGE = String.raw`<!doctype html>
   </script>
 </body>
 </html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}

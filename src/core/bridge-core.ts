@@ -22,6 +22,10 @@ export class BridgeCore {
     return handle;
   }
 
+  public getResolvedProjectId(taskId: string): string | undefined {
+    return this.orchestratorAdapter.getResolvedProjectId?.(taskId);
+  }
+
   public async getTaskStatus(handle: TaskHandle): Promise<TaskStatus> {
     const status = await this.orchestratorAdapter.getTaskStatus(handle);
     const storedTask = this.taskStore.get(handle);

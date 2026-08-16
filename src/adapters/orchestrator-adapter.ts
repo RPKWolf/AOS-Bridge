@@ -10,4 +10,5 @@ export interface OrchestratorAdapter {
   submitTask(request: TaskRequest): Promise<TaskHandle>;
   getTaskStatus(handle: TaskHandle): Promise<TaskStatus>;
   getTaskResult(handle: TaskHandle): Promise<TaskResult>;
+  getResolvedProjectId?(taskId: string): string | undefined;
 }

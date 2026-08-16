@@ -25,6 +25,7 @@ export interface AcceptedAgentTaskResponse {
 
 export class LocalBridgeGateway {
   private readonly handles = new Map<string, TaskHandle>();
+  private activeProjectId: string | undefined;
 
   public constructor(
     private readonly bridge: BridgeCore,
@@ -49,8 +50,16 @@ export class LocalBridgeGateway {
       createdAt: new Date().toISOString(),
     });
     this.handles.set(input.id, handle);
+    const resolvedProjectId = this.bridge.getResolvedProjectId(input.id);
+    if (resolvedProjectId !== undefined) {
+      this.activeProjectId = resolvedProjectId;
+    }
 
     return handle;
+  }
+
+  public getActiveProjectId(): string | undefined {
+    return this.activeProjectId;
   }
 
   public async getTaskStatus(id: string): Promise<TaskStatus> {
