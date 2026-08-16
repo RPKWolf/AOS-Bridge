@@ -4,10 +4,24 @@ import type { AcceptedAgentTask } from "../gateway/agent-orchestrator-adapter";
 import type { TaskRequest } from "../types/task";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
+export const DEFAULT_MAX_REMEDIATIONS = 3;
+
+export type ValidationFailureCode =
+  | "UNKNOWN_COMMIT" | "COMMIT_MISMATCH" | "VALIDATION_FAILED"
+  | "AMBIGUOUS" | "MULTIPLE_SOLUTIONS" | "MISSING_INPUT" | "PERMISSION_REQUIRED"
+  | "SECURITY_RISK" | "SCOPE_EXCEEDED" | "HUMAN_DECISION_REQUIRED"
+  | "ROUTING_CONFLICT" | "WORKTREE_CONFLICT";
+
+const FAIL_CLOSED_CODES = new Set<ValidationFailureCode>([
+  "UNKNOWN_COMMIT", "COMMIT_MISMATCH", "AMBIGUOUS", "MULTIPLE_SOLUTIONS", "MISSING_INPUT",
+  "PERMISSION_REQUIRED", "SECURITY_RISK", "SCOPE_EXCEEDED", "HUMAN_DECISION_REQUIRED",
+  "ROUTING_CONFLICT", "WORKTREE_CONFLICT",
+]);
 
 export interface DashboardWorkflowTaskClient {
   submitTask(request: TaskRequest): Promise<AcceptedAgentTask>;
   waitForTaskResult(taskId: string): Promise<TaskResult>;
+  getTaskSessionId?(taskId: string): string | undefined;
 }
 
 export interface DashboardWorkflowRequest {
@@ -15,7 +29,8 @@ export interface DashboardWorkflowRequest {
   projectId: string;
   baseCommit: string;
   prompt: string;
-  maxRemediations: number;
+  /** Optional explicit override; autonomous remediation defaults to three attempts. */
+  maxRemediations?: number;
 }
 
 export type DashboardWorkflowPhase = "implementation" | "validation" | "remediation";
@@ -27,6 +42,11 @@ export interface DashboardWorkflowAuditEntry {
   projectId: string;
   targetCommit: string;
   status: "submitted" | "PASS" | "FAIL";
+  attemptNumber?: number;
+  sessionId?: string;
+  resultCommit?: string;
+  decision?: "REMEDIATE" | "PASS" | "FAIL_CLOSED";
+  originalTask?: string;
   detail?: string;
 }
 
@@ -47,17 +67,18 @@ interface PhaseResult {
   targetCommit?: string;
   commit?: string;
   failureSignature?: string;
-  failureCode?: "UNKNOWN_COMMIT" | "COMMIT_MISMATCH" | "VALIDATION_FAILED";
+  failureCode?: ValidationFailureCode;
   findings?: string[];
 }
 
-/** Opt-in policy for Dashboard work. It only submits ordinary, always-new Bridge tasks. */
+/** Split workflow policy. Every phase is an ordinary, always-new Bridge task/AO session. */
 export class DashboardWorkflowCoordinator {
   public constructor(
     private readonly client: DashboardWorkflowTaskClient,
     private readonly provider = "dashboard-workflow",
     private readonly orchestrator = "agent-orchestrator",
     private readonly createCorrelationId: () => string = randomUUID,
+    private readonly defaultMaxRemediations = DEFAULT_MAX_REMEDIATIONS,
   ) {}
 
   public async run(request: DashboardWorkflowRequest): Promise<DashboardWorkflowOutcome> {
@@ -65,6 +86,7 @@ export class DashboardWorkflowCoordinator {
     const correlationId = this.createCorrelationId();
     try {
       this.validateRequest(request);
+      const maxRemediations = request.maxRemediations ?? this.defaultMaxRemediations;
       const implementation = await this.execute(
         request,
         correlationId,
@@ -88,24 +110,30 @@ export class DashboardWorkflowCoordinator {
           targetCommit,
           this.validationPrompt(request.projectId, targetCommit, correlationId),
           audit,
+          remediationCount,
         );
         this.requirePhase(validation, "validation", request.projectId, targetCommit);
         if (validation.status === "PASS") {
+          this.recordDecision(audit, "validation", "PASS", remediationCount);
           return { status: "PASS", correlationId, projectId: request.projectId, commit: targetCommit, audit };
         }
-        if (validation.failureCode === "UNKNOWN_COMMIT" || validation.failureCode === "COMMIT_MISMATCH") {
+        if (validation.failureCode && FAIL_CLOSED_CODES.has(validation.failureCode)) {
+          this.recordDecision(audit, "validation", "FAIL_CLOSED", remediationCount);
           return this.failed(correlationId, request.projectId, audit, `Validation failed closed: ${validation.failureCode}`);
         }
         if (!validation.failureSignature?.trim()) {
           return this.failed(correlationId, request.projectId, audit, "Validation FAIL omitted failureSignature");
         }
         if (failures.has(validation.failureSignature)) {
+          this.recordDecision(audit, "validation", "FAIL_CLOSED", remediationCount);
           return this.failed(correlationId, request.projectId, audit, "Validation repeated the same failure");
         }
         failures.add(validation.failureSignature);
-        if (remediationCount >= request.maxRemediations) {
+        if (remediationCount >= maxRemediations) {
+          this.recordDecision(audit, "validation", "FAIL_CLOSED", remediationCount);
           return this.failed(correlationId, request.projectId, audit, "Remediation limit exhausted");
         }
+        this.recordDecision(audit, "validation", "REMEDIATE", remediationCount + 1);
 
         const remediation = await this.execute(
           request,
@@ -114,6 +142,7 @@ export class DashboardWorkflowCoordinator {
           targetCommit,
           this.remediationPrompt(request.projectId, targetCommit, correlationId, validation),
           audit,
+          remediationCount + 1,
         );
         this.requirePhase(remediation, "remediation", request.projectId, targetCommit);
         if (remediation.status !== "PASS" || !remediation.commit) {
@@ -142,10 +171,14 @@ export class DashboardWorkflowCoordinator {
     targetCommit: string,
     prompt: string,
     audit: DashboardWorkflowAuditEntry[],
+    attemptNumber = 0,
   ): Promise<PhaseResult> {
     const taskId = `${request.id}:${phase}:${audit.filter((entry) => entry.phase === phase && entry.status === "submitted").length}`;
-    audit.push({ correlationId, taskId, phase, projectId: request.projectId, targetCommit, status: "submitted" });
-    await this.client.submitTask({
+    audit.push({
+      correlationId, taskId, phase, projectId: request.projectId, targetCommit, status: "submitted",
+      attemptNumber, ...(phase === "implementation" ? { originalTask: request.prompt } : {}),
+    });
+    const accepted = await this.client.submitTask({
       schemaVersion: 2,
       id: taskId,
       prompt,
@@ -153,8 +186,10 @@ export class DashboardWorkflowCoordinator {
       provider: this.provider,
       orchestrator: this.orchestrator,
       createdAt: new Date().toISOString(),
-      metadata: { correlationId, phase, baseCommit: targetCommit, targetCommit },
+      metadata: { correlationId, phase, attemptNumber, baseCommit: targetCommit, targetCommit },
     });
+    const sessionId = this.client.getTaskSessionId?.(accepted.taskId);
+    audit[audit.length - 1].sessionId = sessionId;
     const taskResult = await this.client.waitForTaskResult(taskId);
     if (taskResult.status !== "completed" || typeof taskResult.output !== "string") {
       throw new Error(`${phase} returned an incomplete task result`);
@@ -163,6 +198,7 @@ export class DashboardWorkflowCoordinator {
     audit.push({
       correlationId, taskId, phase, projectId: request.projectId, targetCommit,
       status: result.status, detail: result.failureSignature ?? result.findings?.join("; "),
+      attemptNumber, sessionId, resultCommit: result.commit,
     });
     return result;
   }
@@ -179,8 +215,7 @@ export class DashboardWorkflowCoordinator {
         throw new Error(`Task output field ${field} must be a string`);
       }
     }
-    if (value.failureCode !== undefined && value.failureCode !== "UNKNOWN_COMMIT" &&
-        value.failureCode !== "COMMIT_MISMATCH" && value.failureCode !== "VALIDATION_FAILED") {
+    if (value.failureCode !== undefined && !isValidationFailureCode(value.failureCode)) {
       throw new Error("Task output field failureCode is invalid");
     }
     if (value.findings !== undefined && (!Array.isArray(value.findings) || value.findings.some((item) => typeof item !== "string"))) {
@@ -200,7 +235,8 @@ export class DashboardWorkflowCoordinator {
   private validateRequest(request: DashboardWorkflowRequest): void {
     if (!request.id.trim() || !request.projectId.trim() || !request.prompt.trim()) throw new Error("Workflow id, projectId, and prompt are required");
     this.requireSha(request.baseCommit, "baseCommit");
-    if (!Number.isInteger(request.maxRemediations) || request.maxRemediations < 0) throw new Error("maxRemediations must be a non-negative integer");
+    const maxRemediations = request.maxRemediations ?? this.defaultMaxRemediations;
+    if (!Number.isInteger(maxRemediations) || maxRemediations < 0) throw new Error("maxRemediations must be a non-negative integer");
   }
 
   private requireSha(value: string | undefined, label: string): string {
@@ -213,7 +249,7 @@ export class DashboardWorkflowCoordinator {
   }
 
   private validationPrompt(projectId: string, targetCommit: string, correlationId: string): string {
-    return `Dashboard validation phase in a new session/worktree. Correlation: ${correlationId}. Project: ${projectId}. Fail closed unless commit ${targetCommit} exists in this project; checkout and verify exactly that commit. Perform build, tests, and browser validation. Do not modify or commit files. Return only JSON: {"phase":"validation","status":"PASS|FAIL","projectId":"${projectId}","targetCommit":"${targetCommit}","failureCode":"UNKNOWN_COMMIT|COMMIT_MISMATCH|VALIDATION_FAILED","failureSignature":"<stable signature required on FAIL>","findings":[]}.`;
+    return `Dashboard validation phase in a new session/worktree. Correlation: ${correlationId}. Project: ${projectId}. Fail closed unless commit ${targetCommit} exists in this project; checkout and verify exactly that commit. Perform build, tests, and browser validation. Do not modify or commit files. Classify FAIL as VALIDATION_FAILED only when findings are unambiguous, safely fixable, in scope, and require no human input; otherwise use UNKNOWN_COMMIT, COMMIT_MISMATCH, AMBIGUOUS, MULTIPLE_SOLUTIONS, MISSING_INPUT, PERMISSION_REQUIRED, SECURITY_RISK, SCOPE_EXCEEDED, HUMAN_DECISION_REQUIRED, ROUTING_CONFLICT, or WORKTREE_CONFLICT. Return only JSON: {"phase":"validation","status":"PASS|FAIL","projectId":"${projectId}","targetCommit":"${targetCommit}","failureCode":"<classification>","failureSignature":"<stable signature required on FAIL>","findings":[]}.`;
   }
 
   private remediationPrompt(projectId: string, targetCommit: string, correlationId: string, validation: PhaseResult): string {
@@ -221,7 +257,15 @@ export class DashboardWorkflowCoordinator {
   }
 
   private failed(correlationId: string, projectId: string, audit: DashboardWorkflowAuditEntry[], reason: string): DashboardWorkflowOutcome {
+    const lastResult = [...audit].reverse().find((entry) => entry.status !== "submitted");
+    if (lastResult && !lastResult.decision) lastResult.decision = "FAIL_CLOSED";
     return { status: "FAIL", correlationId, projectId, reason, audit };
+  }
+
+  private recordDecision(audit: DashboardWorkflowAuditEntry[], phase: DashboardWorkflowPhase,
+    decision: "REMEDIATE" | "PASS" | "FAIL_CLOSED", attemptNumber: number): void {
+    const entry = [...audit].reverse().find((item) => item.phase === phase && item.status !== "submitted");
+    if (entry) { entry.decision = decision; entry.attemptNumber = attemptNumber; }
   }
 }
 
@@ -231,4 +275,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isPhase(value: unknown): value is DashboardWorkflowPhase {
   return value === "implementation" || value === "validation" || value === "remediation";
+}
+
+function isValidationFailureCode(value: unknown): value is ValidationFailureCode {
+  return typeof value === "string" && (value === "VALIDATION_FAILED" || FAIL_CLOSED_CODES.has(value as ValidationFailureCode));
 }

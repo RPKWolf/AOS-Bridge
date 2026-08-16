@@ -83,6 +83,16 @@ AO_BASE_URL=<base-url> E2E_PROJECT_ID=<project-id> AO_HARNESS=<harness> AO_DISPL
 
 The command sends exactly `Reply only with: BRIDGE_OK` and prints the task handle, terminal status, and completed output.
 
+## Split workflow remediation
+
+`DashboardWorkflowCoordinator` runs implementation and validation as separate ordinary Bridge
+tasks, each routed to a new AO session with the same immutable `projectId` and exact commit. An
+unambiguous, in-scope `VALIDATION_FAILED` starts remediation automatically and then validates the
+new commit in another session. The centralized default is three remediation attempts and can be
+overridden with `maxRemediations` for explicitly controlled workflows. PASS terminates the loop;
+ambiguous, unsafe, out-of-scope, input/permission-dependent, routing/commit/worktree-conflicted,
+repeated, or limit-exhausted failures stop closed without another task.
+
 ## MVP limitations
 
 - Only AO Chat-mode orchestration is implemented.

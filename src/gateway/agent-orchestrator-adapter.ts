@@ -38,6 +38,10 @@ export class AgentOrchestratorAdapter implements AgentTaskAdapter {
     return { taskId: request.id, status: "accepted" };
   }
 
+  public getTaskSessionId(taskId: string): string {
+    return this.getHandle(taskId).sessionId;
+  }
+
   public hasTask(taskId: string): boolean {
     return this.handles.has(taskId);
   }
