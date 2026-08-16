@@ -43,10 +43,17 @@ export interface RuntimeMetadata {
   metadata?: Record<string, unknown>;
 }
 
+/** Optional caller-selected AO project routing. */
+export interface TaskRouting {
+  projectId?: string;
+}
+
 /** A task submitted to the bridge. The prompt is passed through unchanged. */
 export interface TaskRequest {
+  schemaVersion?: 2;
   id: string;
   prompt: string;
+  routing?: TaskRouting;
   provider: ProviderType;
   orchestrator: OrchestratorType;
   createdAt: string;

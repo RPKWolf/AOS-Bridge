@@ -41,3 +41,25 @@ test("submits and reads a completed task through the local HTTP API", async () =
   assert.equal(requests[2].url, "http://127.0.0.1:8787/api/v1/tasks/task-1/result");
   assert.deepEqual(output, ["BRIDGE_OK"]);
 });
+
+test("optionally passes an explicit project without changing the prompt", async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({ url, init });
+    if (url.endsWith("/api/v1/tasks")) return Response.json({ id: "task-2" }, { status: 202 });
+    if (url.endsWith("/api/v1/tasks/task-2")) return Response.json({ status: "completed" });
+    return Response.json({ output: "OK" });
+  };
+  console.log = () => undefined;
+  Date.now = () => 2;
+
+  await runLocalCli(["run", "same prompt", "--project", "aos-bridge"]);
+
+  assert.deepEqual(JSON.parse(String(requests[0].init?.body)), {
+    id: "bridge-cli-2",
+    prompt: "same prompt",
+    schemaVersion: 2,
+    routing: { projectId: "aos-bridge" },
+  });
+});

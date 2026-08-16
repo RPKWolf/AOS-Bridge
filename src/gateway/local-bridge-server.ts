@@ -93,7 +93,28 @@ function parseSubmitTask(value: unknown): SubmitTaskInput {
     throw new InvalidRequestError("Request body must contain string id and prompt fields");
   }
 
-  return { id: value.id, prompt: value.prompt };
+  if (value.schemaVersion !== undefined && value.schemaVersion !== 2) {
+    throw new InvalidRequestError("schemaVersion must be 2 when provided");
+  }
+
+  let routing: SubmitTaskInput["routing"];
+  if (value.routing !== undefined) {
+    if (!isRecord(value.routing)) {
+      throw new InvalidRequestError("routing must be an object when provided");
+    }
+    if (value.routing.projectId !== undefined &&
+        (typeof value.routing.projectId !== "string" || !value.routing.projectId.trim())) {
+      throw new InvalidRequestError("routing.projectId must be a non-empty string when provided");
+    }
+    routing = value.routing.projectId === undefined ? {} : { projectId: value.routing.projectId };
+  }
+
+  return {
+    ...(value.schemaVersion === undefined ? {} : { schemaVersion: 2 }),
+    id: value.id,
+    prompt: value.prompt,
+    ...(routing === undefined ? {} : { routing }),
+  };
 }
 
 function parseAgentTask(value: unknown): string {
@@ -199,6 +220,8 @@ const CONTROL_PAGE = String.raw`<!doctype html>
   <h1>AOS-Bridge Control</h1>
   <p>Bridge status: <strong id="bridge-status">Checking…</strong></p>
   <form id="task-form">
+    <label for="project-id">Project ID (optional)</label>
+    <input id="project-id" name="projectId" type="text">
     <label for="prompt">Prompt</label>
     <textarea id="prompt" name="prompt" required></textarea>
     <button type="submit">Submit</button>
@@ -215,6 +238,7 @@ const CONTROL_PAGE = String.raw`<!doctype html>
       var bridgeStatus = document.getElementById("bridge-status");
       var form = document.getElementById("task-form");
       var prompt = document.getElementById("prompt");
+      var projectId = document.getElementById("project-id");
       var taskId = document.getElementById("task-id");
       var taskStatus = document.getElementById("task-status");
       var heartbeat = document.getElementById("heartbeat");
@@ -289,7 +313,10 @@ const CONTROL_PAGE = String.raw`<!doctype html>
           var submitted = await readJson(await fetch("/api/v1/tasks", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ id: id, prompt: prompt.value })
+            body: JSON.stringify(Object.assign(
+              { id: id, prompt: prompt.value },
+              projectId.value.trim() ? { schemaVersion: 2, routing: { projectId: projectId.value.trim() } } : {}
+            ))
           }));
           taskId.textContent = submitted.id;
           writeLog("Submitted task " + submitted.id);

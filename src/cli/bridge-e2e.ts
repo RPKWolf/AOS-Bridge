@@ -13,14 +13,15 @@ const terminalStatuses = new Set(["completed", "failed", "interrupted"]);
 async function main(): Promise<void> {
   const adapter = await AoRestAdapter.create({
     baseUrl: requiredEnvironment("AO_BASE_URL"),
-    projectId: requiredEnvironment("AO_PROJECT_ID"),
     harness: requiredEnvironment("AO_HARNESS"),
     displayName: requiredEnvironment("AO_DISPLAY_NAME"),
   });
   const bridge = new BridgeCore(adapter, new InMemoryTaskStore());
   const request: TaskRequest = {
+    schemaVersion: 2,
     id: `bridge-e2e-${Date.now()}`,
     prompt: "Reply only with: BRIDGE_OK",
+    routing: { projectId: requiredEnvironment("E2E_PROJECT_ID") },
     provider: "manual-e2e",
     orchestrator: "agent-orchestrator",
     createdAt: new Date().toISOString(),

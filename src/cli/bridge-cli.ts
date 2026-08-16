@@ -1,14 +1,24 @@
 import { InvalidConfigurationError } from "../errors/bridge-error";
 
 export async function runLocalCli(args: string[]): Promise<void> {
-  if (args.length !== 2 || args[0] !== "run") {
-    throw new InvalidConfigurationError('Usage: npm run bridge:cli -- run "PROMPT"');
+  if ((args.length !== 2 && args.length !== 4) || args[0] !== "run" ||
+      (args.length === 4 && args[2] !== "--project")) {
+    throw new InvalidConfigurationError('Usage: npm run bridge:cli -- run "PROMPT" [--project PROJECT_ID]');
+  }
+
+  const projectId = args[3];
+  if (projectId !== undefined && !projectId.trim()) {
+    throw new InvalidConfigurationError("PROJECT_ID must be non-empty");
   }
 
   const response = await fetch(`${bridgeBaseUrl()}/api/v1/tasks`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id: `bridge-cli-${Date.now()}`, prompt: args[1] }),
+    body: JSON.stringify({
+      id: `bridge-cli-${Date.now()}`,
+      prompt: args[1],
+      ...(projectId === undefined ? {} : { schemaVersion: 2, routing: { projectId } }),
+    }),
   });
   const submitted = await readResponse(response);
   const task = submitted as { id?: unknown };

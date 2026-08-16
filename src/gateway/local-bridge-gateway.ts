@@ -7,8 +7,10 @@ import type { TaskHandle, TaskResult, TaskStatus } from "../types/task";
 import type { AgentTaskAdapter } from "./agent-orchestrator-adapter";
 
 export interface SubmitTaskInput {
+  schemaVersion?: 2;
   id: string;
   prompt: string;
+  routing?: { projectId?: string };
 }
 
 export interface LocalGatewayTaskDefaults {
@@ -38,8 +40,10 @@ export class LocalBridgeGateway {
     }
 
     const handle = await this.bridge.submitTask({
+      ...(input.schemaVersion === undefined ? {} : { schemaVersion: input.schemaVersion }),
       id: input.id,
       prompt: input.prompt,
+      ...(input.routing === undefined ? {} : { routing: input.routing }),
       provider: this.taskDefaults.provider,
       orchestrator: this.taskDefaults.orchestrator,
       createdAt: new Date().toISOString(),

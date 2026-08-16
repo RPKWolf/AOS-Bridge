@@ -32,17 +32,25 @@ npm test
 Start the loopback-only local server:
 
 ```sh
-AO_BASE_URL=<base-url> AO_PROJECT_ID=<project-id> AO_HARNESS=<harness> AO_DISPLAY_NAME=<display-name> npm run bridge:server
+AO_BASE_URL=<base-url> AO_HARNESS=<harness> AO_DISPLAY_NAME=<display-name> npm run bridge:server
 ```
 
 The server always binds to `127.0.0.1`; `BRIDGE_HOST` MAY be set only to `127.0.0.1`, and `BRIDGE_PORT` defaults to `8787`.
 
 Available endpoints are `GET /health`, `POST /api/v1/tasks`, `GET /api/v1/tasks/{id}`, and `GET /api/v1/tasks/{id}/result`.
 
-Run a prompt through the local Gateway:
+`POST /api/v1/tasks` continues to accept `{ "id": "...", "prompt": "..." }`. Callers may
+select a registered AO project with
+`{ "schemaVersion": 2, "id": "...", "prompt": "...", "routing": { "projectId": "aos" } }`.
+Without `routing.projectId`, the Bridge proceeds only when AO reports exactly one registered
+project. Unknown or ambiguous routing fails before session creation. `AO_PROJECT_ID`, the current
+directory, prompt text, and worktree names are not routing inputs.
+
+Run a prompt through the local Gateway. Project selection is optional only when AO has exactly one registered project:
 
 ```sh
 npm run bridge:cli -- run "PROMPT"
+npm run bridge:cli -- run "PROMPT" --project aos
 ```
 
 The CLI communicates only with the local Bridge HTTP API.
@@ -70,7 +78,7 @@ Set `BRIDGE_URL` to override the default local endpoint `http://127.0.0.1:8787`.
 After installing dependencies, run:
 
 ```sh
-AO_BASE_URL=<base-url> AO_PROJECT_ID=<project-id> AO_HARNESS=<harness> AO_DISPLAY_NAME=<display-name> npm run bridge:e2e
+AO_BASE_URL=<base-url> E2E_PROJECT_ID=<project-id> AO_HARNESS=<harness> AO_DISPLAY_NAME=<display-name> npm run bridge:e2e
 ```
 
 The command sends exactly `Reply only with: BRIDGE_OK` and prints the task handle, terminal status, and completed output.

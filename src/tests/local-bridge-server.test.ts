@@ -11,8 +11,10 @@ import type { TaskStatus } from "../types/task";
 
 test("validates requests and serves task submit, status, and result", async () => {
   let status: TaskStatus = "running";
+  const submittedRequests: Array<{ routing?: { projectId?: string }; schemaVersion?: 2 }> = [];
   const adapter: OrchestratorAdapter = {
-    async submitTask() {
+    async submitTask(request) {
+      submittedRequests.push(request);
       return { sessionId: "session-1", turnId: "turn-1" };
     },
     async getTaskStatus() {
@@ -38,6 +40,7 @@ test("validates requests and serves task submit, status, and result", async () =
     assert.match(control.headers.get("content-type") ?? "", /^text\/html; charset=utf-8$/);
     const controlPage = await control.text();
     assert.match(controlPage, /<textarea id="prompt"/);
+    assert.match(controlPage, /id="project-id"/);
     assert.match(controlPage, /Current task:/);
     assert.match(controlPage, /id="heartbeat"/);
     assert.match(controlPage, /id="poll-count"/);
@@ -86,6 +89,21 @@ test("validates requests and serves task submit, status, and result", async () =
       turnId: "turn-1",
       status: "pending",
     });
+    assert.equal(submittedRequests.at(-1)?.routing, undefined);
+
+    const routed = await fetch(`${baseUrl}/api/v1/tasks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        schemaVersion: 2,
+        id: "task-routed",
+        prompt: "unchanged routed prompt",
+        routing: { projectId: "aos" },
+      }),
+    });
+    assert.equal(routed.status, 202);
+    assert.deepEqual(submittedRequests.at(-1)?.routing, { projectId: "aos" });
+    assert.equal(submittedRequests.at(-1)?.schemaVersion, 2);
 
     status = "running";
     const current = await fetch(`${baseUrl}/api/v1/tasks/task-1`);

@@ -9,9 +9,9 @@ import { createLocalBridgeServer, listenOnLoopback } from "../gateway/local-brid
 async function main(): Promise<void> {
   const adapter = await AoRestAdapter.create({
     baseUrl: requiredEnvironment("AO_BASE_URL"),
-    projectId: requiredEnvironment("AO_PROJECT_ID"),
     harness: requiredEnvironment("AO_HARNESS"),
     displayName: requiredEnvironment("AO_DISPLAY_NAME"),
+    auditLogger: (entry) => console.info(JSON.stringify(entry)),
   });
   const bridge = new BridgeCore(adapter, new InMemoryTaskStore());
   const gateway = new LocalBridgeGateway(bridge, {

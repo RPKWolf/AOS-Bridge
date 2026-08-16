@@ -14,9 +14,19 @@ import type {
 
 export interface AoRestAdapterOptions {
   baseUrl: string;
-  projectId: string;
+  /** @deprecated Kept for source compatibility only; never used for routing. */
+  projectId?: string;
   harness: string;
   displayName: string;
+  auditLogger?: (entry: ProjectRoutingAuditEntry) => void;
+}
+
+export interface ProjectRoutingAuditEntry {
+  event: "project-routing-resolved";
+  taskId: string;
+  requestedProjectId?: string;
+  resolvedProjectId: string;
+  resolution: "explicit" | "single-eligible-fallback";
 }
 
 interface ConversationTurn {
@@ -33,6 +43,9 @@ interface ConversationMessage {
 }
 
 export class AoRestAdapter implements OrchestratorAdapter {
+  private readonly resolvedProjects = new Map<string, string>();
+  private readonly routingAudit = new Map<string, ProjectRoutingAuditEntry>();
+
   private constructor(private readonly options: AoRestAdapterOptions) {}
 
   public static async create(options: AoRestAdapterOptions): Promise<AoRestAdapter> {
@@ -43,10 +56,11 @@ export class AoRestAdapter implements OrchestratorAdapter {
   }
 
   public async submitTask(request: TaskRequest): Promise<TaskHandle> {
+    const resolvedProjectId = await this.resolveProject(request);
     const sessionResponse = await this.fetchJson("/api/v1/sessions", {
       method: "POST",
       body: JSON.stringify({
-        projectId: this.options.projectId,
+        projectId: resolvedProjectId,
         kind: "worker",
         mode: "chat",
         harness: this.options.harness,
@@ -77,6 +91,57 @@ export class AoRestAdapter implements OrchestratorAdapter {
     }
 
     return { sessionId, turnId };
+  }
+
+  public getRoutingAudit(taskId: string): ProjectRoutingAuditEntry | undefined {
+    return this.routingAudit.get(taskId);
+  }
+
+  private async resolveProject(request: TaskRequest): Promise<string> {
+    const projectsResponse = await this.fetchJson("/api/v1/projects");
+    const projectIds = this.getArray(projectsResponse, "projects", "projects response")
+      .map((project) => this.getString(project, "id", "project"));
+    const requestedProjectId = request.routing?.projectId;
+    let resolvedProjectId: string;
+    let resolution: ProjectRoutingAuditEntry["resolution"];
+
+    if (requestedProjectId !== undefined) {
+      if (!projectIds.includes(requestedProjectId)) {
+        throw new AoProtocolError(`AO project is not registered: ${requestedProjectId}`);
+      }
+      resolvedProjectId = requestedProjectId;
+      resolution = "explicit";
+    } else {
+      if (projectIds.length !== 1) {
+        throw new AoProtocolError(
+          `Project routing requires exactly one eligible AO project; found ${projectIds.length}`,
+        );
+      }
+      resolvedProjectId = projectIds[0];
+      resolution = "single-eligible-fallback";
+    }
+
+    const lockedProjectId = this.resolvedProjects.get(request.id);
+    if (lockedProjectId !== undefined && lockedProjectId !== resolvedProjectId) {
+      throw new AoProtocolError(
+        `Task ${request.id} is already routed to AO project ${lockedProjectId}`,
+      );
+    }
+
+    this.resolvedProjects.set(request.id, resolvedProjectId);
+    if (!this.routingAudit.has(request.id)) {
+      const entry: ProjectRoutingAuditEntry = {
+        event: "project-routing-resolved",
+        taskId: request.id,
+        ...(requestedProjectId === undefined ? {} : { requestedProjectId }),
+        resolvedProjectId,
+        resolution,
+      };
+      this.routingAudit.set(request.id, entry);
+      this.options.auditLogger?.(entry);
+    }
+
+    return resolvedProjectId;
   }
 
   public async getTaskStatus(handle: TaskHandle): Promise<TaskStatus> {
