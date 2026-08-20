@@ -13,7 +13,11 @@ import type { TaskStatus } from "../types/task";
 test("validates requests and serves task submit, status, and result", async () => {
   let status: TaskStatus = "running";
   const resolvedProjects = new Map<string, string>();
-  const submittedRequests: Array<{ routing?: { projectId?: string }; schemaVersion?: 2 }> = [];
+  const submittedRequests: Array<{
+    prompt: string;
+    routing?: { projectId?: string };
+    schemaVersion?: 2;
+  }> = [];
   const adapter: OrchestratorAdapter = {
     async submitTask(request) {
       submittedRequests.push(request);
@@ -69,6 +73,8 @@ test("validates requests and serves task submit, status, and result", async () =
     const acceptedBody = (await accepted.json()) as { taskId: string; status: string };
     assert.match(acceptedBody.taskId, /^agent-task-\d+$/);
     assert.equal(acceptedBody.status, "accepted");
+    assert.match(submittedRequests.at(-1)?.prompt ?? "", /This AO\/Codex session is the worker/);
+    assert.match(submittedRequests.at(-1)?.prompt ?? "", /Work request:\nstub task/);
 
     const agentStatus = await fetch(`${baseUrl}/api/v1/tasks/${acceptedBody.taskId}`);
     assert.deepEqual(await agentStatus.json(), { id: acceptedBody.taskId, status: "running" });
@@ -103,6 +109,7 @@ test("validates requests and serves task submit, status, and result", async () =
       status: "pending",
     });
     assert.equal(submittedRequests.at(-1)?.routing, undefined);
+    assert.match(submittedRequests.at(-1)?.prompt ?? "", /Work request:\nunchanged prompt/);
 
     const routed = await fetch(`${baseUrl}/api/v1/tasks`, {
       method: "POST",
@@ -117,6 +124,10 @@ test("validates requests and serves task submit, status, and result", async () =
     assert.equal(routed.status, 202);
     assert.deepEqual(submittedRequests.at(-1)?.routing, { projectId: "aos" });
     assert.equal(submittedRequests.at(-1)?.schemaVersion, 2);
+    assert.match(
+      submittedRequests.at(-1)?.prompt ?? "",
+      /Bridge already resolved and validated the AO project/,
+    );
 
     const routedControl = await (await fetch(`${baseUrl}/control`)).text();
     assert.match(routedControl, /Project: <strong id="bridge-project">aos<\/strong>/);

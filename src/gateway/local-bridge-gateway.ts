@@ -5,6 +5,7 @@ import {
 } from "../errors/bridge-error";
 import type { TaskHandle, TaskResult, TaskStatus } from "../types/task";
 import type { AgentTaskAdapter } from "./agent-orchestrator-adapter";
+import { applyWorkExecutionPolicy } from "../orchestration/work-execution-policy";
 
 export interface SubmitTaskInput {
   schemaVersion?: 2;
@@ -43,7 +44,7 @@ export class LocalBridgeGateway {
     const handle = await this.bridge.submitTask({
       ...(input.schemaVersion === undefined ? {} : { schemaVersion: input.schemaVersion }),
       id: input.id,
-      prompt: input.prompt,
+      prompt: applyWorkExecutionPolicy(input.prompt),
       ...(input.routing === undefined ? {} : { routing: input.routing }),
       provider: this.taskDefaults.provider,
       orchestrator: this.taskDefaults.orchestrator,
@@ -86,7 +87,7 @@ export class LocalBridgeGateway {
     const taskId = `agent-task-${Date.now()}`;
     const accepted = await this.agentOrchestrator.submitTask({
       id: taskId,
-      prompt,
+      prompt: applyWorkExecutionPolicy(prompt),
       provider: this.taskDefaults.provider,
       orchestrator: this.taskDefaults.orchestrator,
       createdAt: new Date().toISOString(),
