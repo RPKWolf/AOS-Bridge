@@ -48,6 +48,8 @@ test("selects a capable agent and submits the policy-bound prompt through the in
   assert.equal(submittedPrompt, applyWorkExecutionPolicy(request.prompt));
   assert.match(submittedPrompt, /Never start a duplicate instance blindly/);
   assert.match(submittedPrompt, /IBKR execution is Paper-only/);
+  assert.match(submittedPrompt, /This AO\/Codex session is the worker/);
+  assert.match(submittedPrompt, /do not fail or stop merely because a global `ao` command is absent/);
   assert.deepEqual(outcome, {
     id: "orchestration-1",
     taskId: "task-1",
@@ -323,6 +325,12 @@ test("mandatory Work policy is fail-closed for Live and guards duplicate runtime
   assert.match(WORK_EXECUTION_POLICY, /Reuse a suitable existing runtime/);
   assert.match(WORK_EXECUTION_POLICY, /start exactly one instance/);
   assert.match(WORK_EXECUTION_POLICY, /Live configuration, account, route, or ambiguity as a blocker/);
+});
+
+test("mandatory Work policy is idempotent across coordinator and Gateway boundaries", () => {
+  const once = applyWorkExecutionPolicy("Implement the task");
+  assert.equal(applyWorkExecutionPolicy(once), once);
+  assert.equal(once.match(/AOS-BRIDGE-MANDATORY-EXECUTION-POLICY-V2/g)?.length, 1);
 });
 
 test("stops after one follow-up iteration when the second decision is FAIL", async () => {
