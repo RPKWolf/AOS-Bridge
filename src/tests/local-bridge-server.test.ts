@@ -74,6 +74,7 @@ test("validates requests and serves task submit, status, and result", async () =
     assert.match(acceptedBody.taskId, /^agent-task-\d+$/);
     assert.equal(acceptedBody.status, "accepted");
     assert.match(submittedRequests.at(-1)?.prompt ?? "", /This AO\/Codex session is the worker/);
+    assert.match(submittedRequests.at(-1)?.prompt ?? "", /Never invoke the AO CLI/);
     assert.match(submittedRequests.at(-1)?.prompt ?? "", /Work request:\nstub task/);
 
     const agentStatus = await fetch(`${baseUrl}/api/v1/tasks/${acceptedBody.taskId}`);

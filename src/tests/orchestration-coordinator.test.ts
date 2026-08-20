@@ -49,6 +49,7 @@ test("selects a capable agent and submits the policy-bound prompt through the in
   assert.match(submittedPrompt, /Never start a duplicate instance blindly/);
   assert.match(submittedPrompt, /IBKR execution is Paper-only/);
   assert.match(submittedPrompt, /This AO\/Codex session is the worker/);
+  assert.match(submittedPrompt, /Never invoke the AO CLI/);
   assert.match(submittedPrompt, /do not fail or stop merely because a global `ao` command is absent/);
   assert.deepEqual(outcome, {
     id: "orchestration-1",
@@ -331,6 +332,17 @@ test("mandatory Work policy is idempotent across coordinator and Gateway boundar
   const once = applyWorkExecutionPolicy("Implement the task");
   assert.equal(applyWorkExecutionPolicy(once), once);
   assert.equal(once.match(/AOS-BRIDGE-MANDATORY-EXECUTION-POLICY-V2/g)?.length, 1);
+});
+
+test("mandatory Work policy overrides explicit nested implementation and validation delegation", () => {
+  const prompt = applyWorkExecutionPolicy(
+    "Use ao to spawn a new implementation worker and then a separate validation session.",
+  );
+
+  assert.match(prompt, /Never invoke the AO CLI, spawn a nested AO worker\/session/);
+  assert.match(prompt, /implementation, validation, remediation, or other AO sessions/);
+  assert.match(prompt, /owned by the outer Bridge\/controller workflow/);
+  assert.match(prompt, /Work request:\nUse ao to spawn/);
 });
 
 test("stops after one follow-up iteration when the second decision is FAIL", async () => {
